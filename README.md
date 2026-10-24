@@ -5,7 +5,7 @@
 [![CI](https://github.com/cmspeedau/Launchcraft/actions/workflows/ci.yml/badge.svg)](https://github.com/cmspeedau/Launchcraft/actions/workflows/ci.yml)
 [![Docker](https://img.shields.io/badge/docker-container-blue?logo=docker&logoColor=white)](Dockerfile)
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE)
-[![Rust](https://img.shields.io/badge/rust-1.80%2B-orange.svg?logo=rust&logoColor=white)](Cargo.toml)
+[![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg?logo=rust&logoColor=white)](Cargo.toml)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20macOS-lightgrey.svg)]()
 
 **A high-performance, cross-platform Minecraft launcher and modpack distribution engine built in Rust.**
@@ -62,6 +62,8 @@ Launchcraft/
 │   ├── launchcraft-auth/        # Microsoft OAuth, Xbox Live, and token management
 │   ├── launchcraft-backup/      # World backup zipping engine, server policy, and cloud sync
 │   └── launchcraft-builder/     # Headless CLI for scanning and building CAS modpacks
+├── compose.yaml                 # Builder + local pack repository (port 8080) stack
+├── docker/                      # repo-server static hosting config
 ├── Dockerfile                   # Multi-stage container for headless pack compilation
 └── ROADMAP.md                   # Detailed architecture and milestone tracking
 ```
@@ -70,7 +72,7 @@ Launchcraft/
 
 ## Docker & Container Environment
 
-The headless pack builder (`launchcraft-builder`) is packaged as a minimal, secure multi-stage Docker image based on Alpine Linux.
+The headless pack builder (`launchcraft-builder`) is packaged as a minimal, secure multi-stage Docker image based on Debian slim, and Compose files wire up the builder plus a local pack repository server.
 
 ### Environment & Volume Reference
 
@@ -83,6 +85,7 @@ The headless pack builder (`launchcraft-builder`) is packaged as a minimal, secu
 | `RUST_LOG` | Environment | `info` | Logging verbosity (`error`, `warn`, `info`, `debug`, `trace`) |
 | `COMPRESSION_LEVEL` | Environment / Flag | `3` | Zstandard compression level (1-22) for CAS object blobs |
 | `THREADS` | Environment / Flag | `auto` | Number of Rayon worker threads allocated for parallel hashing and compression |
+| `REPO_PORT` | Environment | `8080` | Host port on which `repo-server` publishes the built pack over HTTP |
 
 ### Running the Docker Builder
 
@@ -99,16 +102,47 @@ docker run --rm \
   launchcraft-builder build \
     --input /workspace/pack \
     --output /workspace/dist \
-    --name "My Server Pack" \
-    --version "1.0.0"
+    --pack-id "my-server-pack" \
+    --pack-version "1.0.0"
 ```
+
+Or use the bundled Compose stack (falls back to a local image build when
+the published image is absent):
+
+```bash
+docker compose run --rm builder init --path /workspace/pack/pack.json
+docker compose run --rm builder        # ./pack -> ./dist
+```
+
+### Serving a Pack Repository
+
+The `repo-server` service publishes the built `./dist` directory as a static
+HTTP pack repository on **port 8080** (override with `REPO_PORT`):
+
+```bash
+docker compose up -d repo-server
+
+# Repository endpoints
+curl http://localhost:8080/manifest.json
+curl http://localhost:8080/cas/objects/<xx>/<blake3-hash>
+```
+
+Launchers point their repository configuration at `http://localhost:8080`.
+The served layout (`manifest.json` + `cas/objects/`) is exactly what the
+builder writes to `./dist`, ready for S3, nginx, or any static CDN.
+
+> **Pre-release note:** the sync engine's remote-fetch paths
+> (`/objects/<hash>`, array-shaped manifest) do not yet match what the
+> builder emits (`/cas/objects/<xx>/<hash>`, path-keyed manifest); engine-side
+> alignment of the repository URL scheme is tracked as a follow-up. Static
+> serving itself is fully functional.
 
 ---
 
 ## Quickstart & Local Development
 
 ### Prerequisites
-- [Rust](https://rustup.rs/) (1.80+)
+- [Rust](https://rustup.rs/) (1.85+, earlier toolchains cannot parse current dependencies)
 - `libzstd` development libraries:
   - **Debian / Ubuntu:** `sudo apt-get install libzstd-dev`
   - **Fedora:** `sudo dnf install libzstd-devel`

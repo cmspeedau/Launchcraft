@@ -1,4 +1,4 @@
-# Launchcraft headless modpack builder.
+# Launchcraft headless modpack builder + local pack repository.
 #
 # The `builder` service is a one-shot job, so use `docker compose run`:
 #
@@ -7,6 +7,13 @@
 #   docker compose run --rm builder                  # build ./pack -> ./dist
 #   docker compose run --rm builder build \
 #       --config /workspace/pack/pack.json           # build with explicit config
+#
+# The `repo-server` service publishes ./dist over HTTP so Launchcraft
+# clients can sync the pack (manifest.json + CAS blobs):
+#
+#   docker compose up -d repo-server                 # serve on http://localhost:8080
+#   docker compose logs -f repo-server
+#   docker compose down
 #
 # The image published by the release workflow is private (the repository is);
 # either `docker login ghcr.io` first, or let Compose build it locally from
@@ -35,3 +42,21 @@ services:
     # One-shot build tool: exit normally, never restart.
     init: true
     restart: "no"
+
+  repo-server:
+    # Static pack repository: serves ./dist (manifest.json + cas/objects/...)
+    # to launching clients. Point an instance's repository URL at
+    # http://localhost:8080 after `docker compose run --rm builder`.
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - "${REPO_PORT:-8080}:80"
+    volumes:
+      - ./dist:/usr/share/nginx/html:ro
+      - ./docker/repo-server.conf:/etc/nginx/conf.d/default.conf:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:80/"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
