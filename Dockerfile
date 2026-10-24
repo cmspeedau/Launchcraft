@@ -1,25 +1,32 @@
 # ------------------------------------------------------------------------------
 # Build Stage
 # ------------------------------------------------------------------------------
-FROM rust:1.80-alpine AS builder
+FROM rust:1.80-slim-bookworm AS builder
 
-RUN apk add --no-cache musl-dev gcc g++ make zstd-dev
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config \
+    libzstd-dev \
+    build-essential \
+    ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /usr/src/launchcraft
 
-COPY Cargo.toml ./
+COPY Cargo.toml Cargo.lock* ./
 COPY crates ./crates
 COPY apps ./apps
 
-WORKDIR /usr/src/launchcraft/crates/launchcraft-builder
-RUN cargo build --release
+RUN cargo build --release -p launchcraft-builder
 
 # ------------------------------------------------------------------------------
 # Runtime Stage
 # ------------------------------------------------------------------------------
-FROM alpine:3.20
+FROM debian:bookworm-slim
 
-RUN apk add --no-cache ca-certificates libgcc
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    libzstd1 \
+ && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /usr/src/launchcraft/target/release/launchcraft-builder /usr/local/bin/launchcraft-builder
 
