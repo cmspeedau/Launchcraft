@@ -1,7 +1,10 @@
 # ------------------------------------------------------------------------------
 # Build Stage
 # ------------------------------------------------------------------------------
-FROM rust:1.80-bookworm AS builder
+# Track the latest stable 1.x toolchain (matches CI's `rust-toolchain@stable`).
+# Pinned old toolchains break because Cargo.lock is not committed and
+# current dependencies require the `edition2024` cargo feature (Rust >= 1.85).
+FROM rust:1-bookworm AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
