@@ -9,10 +9,11 @@ A modern, high-performance, cross-platform Minecraft launcher built in **Rust** 
 Launchcraft modernizes the SKCraft philosophy into a fast, memory-safe, portable desktop client and headless pack-building toolchain.
 
 ### Core Stack
-- **Launcher Core & Engine:** Rust (`tokio`, `reqwest`, `blake3`, `zstd`, `directories`)
+- **Launcher Core & Engine:** Rust (`tokio`, `reqwest`, `blake3`, `zstd`, `directories`, `zip`)
 - **Desktop UI Framework:** Tauri v2 + lightweight web frontend (TypeScript/Tailwind/Solid or Svelte)
 - **Modpack Distribution:** HTTP/S3/CDN Content-Addressable Storage (CAS)
 - **Pack Builder:** Headless Rust CLI (`launchcraft-builder`) packaged for standalone usage and Docker CI
+- **World & Save Game Management:** `launchcraft-backup` with server-side enablement control, ZIP streaming, and world management
 
 ### Target Platforms
 - **Linux:** AppImage (standalone x86_64, aarch64)
@@ -51,7 +52,9 @@ Installed Mode (Standard OS defaults):
     ├── server-pack-1/
     │   ├── instance.json     # Local instance configuration
     │   ├── manifest.json     # Sync state manifest
-    │   └── minecraft/        # Game working directory (mods, configs, saves)
+    │   ├── backups/          # Compressed world ZIP backups
+    │   └── minecraft/        # Game working directory
+    │       └── saves/        # Singleplayer world saves
     └── custom-pack/
 ```
 
@@ -70,7 +73,9 @@ Phase 1: Workspace & Core Foundation (Done)
    │
    ├── Phase 5: Tauri v2 Desktop Interface & Portable Distribution (Done)
    │
-   └── Phase 6: Headless Pack Builder & Docker Image (Done)
+   ├── Phase 6: Headless Pack Builder & Docker Image (Done)
+   │
+   └── Phase 7: Save Game Backups & World Cloud Sync (Done)
 ```
 
 ---
@@ -165,7 +170,29 @@ Phase 1: Workspace & Core Foundation (Done)
 
 ---
 
+### Phase 7: Save Game Backups & World Cloud Sync (Complete)
+*Objective: Comprehensive world backup management, server-governed upload/download policies, and world file viewer.*
+
+- [x] **Server-Governed Policy Enforcement:**
+  - Modpack and remote instance configuration specifying `server_backups_enabled` (`true`/`false`) and remote sync endpoint.
+  - Client-side refusal to upload backups when server-side backups are disabled.
+- [x] **World File Viewer & Inspector (`launchcraft-backup`):**
+  - Scans `<instance>/minecraft/saves/` for active singleplayer worlds.
+  - Computes size on disk, last modified/played timestamps, and detects locked sessions (`session.lock`).
+- [x] **ZIP Compression Engine:**
+  - Compresses world directories into standalone ZIP archives (`<world>-<timestamp>.zip`) before uploading or archiving.
+  - Fast, safe extraction/restoration of world ZIP archives back into the `saves/` folder.
+- [x] **Bidirectional Cloud Sync & Upload/Download:**
+  - HTTP multipart/streaming upload of zipped world saves to remote servers.
+  - Download of remote world ZIP archives with verification and automatic restore capabilities.
+- [x] **Desktop UI & IPC Integration:**
+  - Worlds file viewer tab in `launchcraft-desktop`.
+  - Action buttons for: "Backup World (ZIP)", "Upload to Server", "Download World ZIP", and "Restore Backup".
+
+---
+
 ## 4. Architectural Safeguards
 - **Zero-trust verification:** Every file is verified by cryptographic hash before execution.
 - **Fail-safe updates:** Sync changes stage files in a temporary location before atomic rename.
 - **Offline resilience:** Validated instances remain playable offline when connectivity is unavailable.
+- **Session safety:** World backup skips temporary lock files (`session.lock`) to avoid corrupting running games.

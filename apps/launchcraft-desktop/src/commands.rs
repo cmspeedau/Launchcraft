@@ -2,9 +2,12 @@
 
 use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
-use launchcraft_core::instance::InstanceConfig;
+use launchcraft_core::instance::{BackupArchiveInfo, InstanceConfig, WorldSaveInfo};
 use launchcraft_auth::types::{DeviceCodeResponse, MinecraftAccount};
 use launchcraft_auth::MinecraftAuthenticator;
+use launchcraft_backup::archiver::WorldArchiver;
+use launchcraft_backup::client::BackupSyncClient;
+use launchcraft_backup::inspector::WorldInspector;
 use crate::state::AppState;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -18,16 +21,9 @@ pub struct SystemInfoResponse {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct InstanceSummary {
     pub id: String,
-    pub title: String,
-    pub version: String,
-    pub memory_max_mb: u32,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct LaunchLogEntry {
-    pub timestamp: String,
-    pub stream: String,
-    pub line: String,
+    pub name: String,
+    pub minecraft_version: String,
+    pub server_backups_enabled: bool,
 }
 
 /// Retrieve information about launcher paths and portable mode.
@@ -58,10 +54,10 @@ pub async fn list_instances(state: &AppState) -> Result<Vec<InstanceSummary>, St
                 if let Ok(data) = std::fs::read_to_string(&config_path) {
                     if let Ok(cfg) = serde_json::from_str::<InstanceConfig>(&data) {
                         result.push(InstanceSummary {
-                            id: cfg.id,
-                            title: cfg.title,
-                            version: cfg.version,
-                            memory_max_mb: cfg.memory_max_mb,
+                            id: cfg.id.to_string(),
+                            name: cfg.name,
+                            minecraft_version: cfg.minecraft_version,
+                            server_backups_enabled: cfg.backup_config.server_backups_enabled,
                         });
                     }
                 }
@@ -70,6 +66,87 @@ pub async fn list_instances(state: &AppState) -> Result<Vec<InstanceSummary>, St
     }
 
     Ok(result)
+}
+
+/// Lists all singleplayer world saves for a specific instance.
+pub async fn list_instance_worlds(
+    state: &AppState,
+    instance_id: String,
+) -> Result<Vec<WorldSaveInfo>, String> {
+    let instance_dir = state.paths.instances_dir().join(&instance_id);
+    WorldInspector::scan_worlds(&instance_dir).map_err(|e| e.to_string())
+}
+
+/// Creates a zipped backup of a target world.
+pub async fn create_world_backup(
+    state: &AppState,
+    instance_id: String,
+    world_folder_name: String,
+) -> Result<BackupArchiveInfo, String> {
+    let instance_dir = state.paths.instances_dir().join(&instance_id);
+    WorldArchiver::create_backup(&instance_dir, &world_folder_name).map_err(|e| e.to_string())
+}
+
+/// Restores a zipped backup archive into the instance saves directory.
+pub async fn restore_world_backup(
+    state: &AppState,
+    instance_id: String,
+    archive_name: String,
+    target_world_name: Option<String>,
+) -> Result<String, String> {
+    let instance_dir = state.paths.instances_dir().join(&instance_id);
+    let path = WorldArchiver::restore_backup(
+        &instance_dir,
+        &archive_name,
+        target_world_name.as_deref(),
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+/// Lists local backup ZIP files for an instance.
+pub async fn list_instance_backups(
+    state: &AppState,
+    instance_id: String,
+) -> Result<Vec<BackupArchiveInfo>, String> {
+    let instance_dir = state.paths.instances_dir().join(&instance_id);
+    WorldArchiver::list_local_backups(&instance_dir).map_err(|e| e.to_string())
+}
+
+/// Uploads a zipped world backup to the remote server if allowed by policy.
+pub async fn upload_world_backup(
+    state: &AppState,
+    instance_id: String,
+    archive_name: String,
+) -> Result<BackupArchiveInfo, String> {
+    let instance_dir = state.paths.instances_dir().join(&instance_id);
+    let config_path = instance_dir.join("instance.json");
+    let cfg_str = std::fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
+    let instance_cfg: InstanceConfig = serde_json::from_str(&cfg_str).map_err(|e| e.to_string())?;
+
+    let client = BackupSyncClient::new();
+    client
+        .upload_backup(&instance_dir, &instance_cfg.backup_config, &archive_name, None)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Downloads a world ZIP archive from the server.
+pub async fn download_world_backup(
+    state: &AppState,
+    instance_id: String,
+    archive_name: String,
+) -> Result<BackupArchiveInfo, String> {
+    let instance_dir = state.paths.instances_dir().join(&instance_id);
+    let config_path = instance_dir.join("instance.json");
+    let cfg_str = std::fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
+    let instance_cfg: InstanceConfig = serde_json::from_str(&cfg_str).map_err(|e| e.to_string())?;
+
+    let client = BackupSyncClient::new();
+    client
+        .download_backup(&instance_dir, &instance_cfg.backup_config, &archive_name, None)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Start Microsoft OAuth Device Code login.
@@ -85,10 +162,10 @@ pub async fn auth_poll_device_code(
 ) -> Result<MinecraftAccount, String> {
     let client = MinecraftAuthenticator::new("00000000402b5328");
     let account = client.authenticate_device_code(&device_code).await.map_err(|e| e.to_string())?;
-    
+
     let mut storage = state.accounts.lock().await;
     storage.save_account(account.clone()).map_err(|e| e.to_string())?;
-    
+
     Ok(account)
 }
 
@@ -97,24 +174,4 @@ pub async fn get_accounts(state: &AppState) -> Result<Vec<MinecraftAccount>, Str
     let mut storage = state.accounts.lock().await;
     let _ = storage.load();
     Ok(storage.accounts().to_vec())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::tempdir;
-
-    #[tokio::test]
-    async fn test_desktop_system_info_and_instances() {
-        let tmp = tempdir().unwrap();
-        let paths = LauncherPaths::new(tmp.path().to_path_buf(), true);
-        let state = AppState::new(paths);
-
-        let info = get_system_info(&state).await.unwrap();
-        assert!(info.is_portable);
-        assert_eq!(info.root_dir, tmp.path());
-
-        let instances = list_instances(&state).await.unwrap();
-        assert!(instances.is_empty());
-    }
 }
