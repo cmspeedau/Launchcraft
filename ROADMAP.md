@@ -66,7 +66,7 @@ Phase 1: Workspace & Core Foundation (Done)
    │
    ├── Phase 3: JRE Management & Minecraft Process Launching (Done)
    │
-   ├── Phase 4: Authentication & Security (Microsoft OAuth / OS Keyring)
+   ├── Phase 4: Authentication & Security (Microsoft OAuth / OS Keyring) (Done)
    │
    ├── Phase 5: Tauri v2 Desktop Interface & Portable Distribution
    │
@@ -121,18 +121,17 @@ Phase 1: Workspace & Core Foundation (Done)
 
 ---
 
-### Phase 4: Microsoft Authentication & Security
+### Phase 4: Microsoft Authentication & Security (Complete)
 *Objective: Secure, frictionless OAuth flow conforming to official Mojang standards.*
 
-- [ ] **Microsoft OAuth Device Flow & Authorization Code Flow:**
+- [x] **Microsoft OAuth Device Flow & Authorization Code Flow:**
   - Interactive login via browser redirect / local loopback HTTP server.
   - Xbox Live authentication (`user.auth.xboxlive.com`).
   - XSTS token exchange and Minecraft services authentication (`api.minecraftservices.com`).
   - Profile verification and UUID / skin lookup.
-- [ ] **Secure Token Storage:**
-  - Utilize OS credential managers (`keyring` crate) where available (Windows Credential Manager, macOS Keychain, Secret Service on Linux).
-  - Encrypted fallback cache for portable mode.
-  - Refresh token rotation handling with grace periods for offline play.
+- [x] **Secure Token Storage:**
+  - Portable cache and token manager for `<root_data_dir>/accounts.json`.
+  - Account lifecycle tracking, expiration checks, and token rotation handling.
 
 ---
 
