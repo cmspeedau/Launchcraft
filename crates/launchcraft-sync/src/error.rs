@@ -25,10 +25,7 @@ pub enum SyncError {
     },
 
     #[error("Remote repository error ({status}): {message}")]
-    RemoteRepo {
-        status: u16,
-        message: String,
-    },
+    RemoteRepo { status: u16, message: String },
 
     #[error("Instance error: {0}")]
     Instance(String),

@@ -43,10 +43,7 @@ impl WhitelistMatcher {
 
     /// Check if a relative path is whitelisted (preserved)
     pub fn is_whitelisted<P: AsRef<Path>>(&self, path: P) -> bool {
-        let normalized = path
-            .as_ref()
-            .to_string_lossy()
-            .replace('\\', "/");
+        let normalized = path.as_ref().to_string_lossy().replace('\\', "/");
 
         for pattern in &self.patterns {
             if Self::glob_matches(pattern, &normalized) {

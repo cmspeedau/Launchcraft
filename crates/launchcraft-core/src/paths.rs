@@ -1,5 +1,5 @@
-use std::path::{Path, PathBuf};
 use directories::ProjectDirs;
+use std::path::{Path, PathBuf};
 
 /// Handles resolution of directories across Linux, Windows, and macOS,
 /// with automatic detection of portable mode.
@@ -30,7 +30,11 @@ impl LauncherPaths {
         } else {
             let proj = ProjectDirs::from("com", "Launchcraft", "Launchcraft")
                 .ok_or_else(|| anyhow::anyhow!("Failed to resolve standard OS directories"))?;
-            (proj.data_dir().to_path_buf(), proj.config_dir().to_path_buf(), false)
+            (
+                proj.data_dir().to_path_buf(),
+                proj.config_dir().to_path_buf(),
+                false,
+            )
         };
 
         Ok(Self {
