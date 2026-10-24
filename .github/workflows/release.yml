@@ -43,9 +43,26 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "prerelease=$PRE" >> "$GITHUB_OUTPUT"
 
+  open-release:
+    name: Open GitHub release
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create or reuse draft-free release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.version.outputs.tag }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
+        run: |
+          EXTRA=()
+          [ "$PRERELEASE" = "true" ] && EXTRA+=(--prerelease)
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "$TAG" --generate-notes "${EXTRA[@]}"
+          fi
+
   windows:
     name: Windows portable
-    needs: version
+    needs: [version, open-release]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -58,24 +75,22 @@ jobs:
       - name: Build release binary
         run: cargo build --release -p launchcraft-desktop
 
-      - name: Package portable ZIP
+      - name: Package portable ZIP and attach to release
         shell: pwsh
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.version.outputs.version }}
+          TAG: ${{ needs.version.outputs.tag }}
         run: |
           New-Item -ItemType Directory dist | Out-Null
           Copy-Item target/release/launchcraft-desktop.exe dist/Launchcraft.exe
           Compress-Archive -Path dist/Launchcraft.exe `
             -DestinationPath "dist/Launchcraft-$VERSION-windows-portable.zip"
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: windows-portable
-          path: dist/*.zip
+          gh release upload "$TAG" "dist/Launchcraft-$VERSION-windows-portable.zip" --clobber
 
   macos:
     name: macOS universal
-    needs: version
+    needs: [version, open-release]
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -93,9 +108,11 @@ jobs:
       - name: Build Intel binary
         run: cargo build --release -p launchcraft-desktop --target x86_64-apple-darwin
 
-      - name: Create universal binary and package
+      - name: Create universal binary and attach to release
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.version.outputs.version }}
+          TAG: ${{ needs.version.outputs.tag }}
         run: |
           mkdir dist
           lipo -create \
@@ -105,15 +122,11 @@ jobs:
           lipo -info dist/Launchcraft
           chmod +x dist/Launchcraft
           zip -j "dist/Launchcraft-${VERSION}-macos-universal.zip" dist/Launchcraft
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: macos-universal
-          path: dist/*.zip
+          gh release upload "$TAG" "dist/Launchcraft-${VERSION}-macos-universal.zip" --clobber
 
   linux-appimage:
     name: Linux AppImage
-    needs: version
+    needs: [version, open-release]
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -143,12 +156,13 @@ jobs:
         env:
           VERSION: ${{ needs.version.outputs.version }}
           ARCH: x86_64
-          APPIMAGE_EXTRACT_AND_RUN: "1"
           LDAI_UPDATE_INFORMATION: "gh-releases-zsync|cmspeedau|Launchcraft|latest|Launchcraft*AppImage.zsync"
+        # NOTE: do not set APPIMAGE_EXTRACT_AND_RUN here; appimagetool inherits
+        # it and its extract-and-run mode loses the finished AppImage output.
         run: |
           wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
           chmod +x linuxdeploy-x86_64.AppImage
-          ./linuxdeploy-x86_64.AppImage --appdir AppDir \
+          ./linuxdeploy-x86_64.AppImage --appdir "$PWD/AppDir" \
             -e target/release/launchcraft-desktop \
             -d apps/launchcraft-desktop/packaging/launchcraft.desktop \
             -i launchcraft.png \
@@ -159,12 +173,11 @@ jobs:
           chmod +x Launchcraft-*.AppImage
           APPIMAGE_EXTRACT_AND_RUN=1 ./Launchcraft-*.AppImage
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: linux-appimage
-          path: |
-            Launchcraft-*.AppImage
-            Launchcraft-*.AppImage.zsync
+      - name: Attach AppImage and zsync to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.version.outputs.tag }}
+        run: gh release upload "$TAG" Launchcraft-*.AppImage Launchcraft-*.AppImage.zsync --clobber
 
   docker:
     name: Docker image
@@ -188,33 +201,3 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository_owner }}/launchcraft:${{ needs.version.outputs.version }}
             ghcr.io/${{ github.repository_owner }}/launchcraft:${{ needs.version.outputs.prerelease == 'true' && 'rc' || 'latest' }}
-
-  release:
-    name: Publish GitHub release
-    needs: [version, windows, macos, linux-appimage]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: dist
-          merge-multiple: true
-
-      - name: Create or update release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ needs.version.outputs.tag }}
-          PRERELEASE: ${{ needs.version.outputs.prerelease }}
-        run: |
-          shopt -s nullglob
-          ASSETS=(dist/*)
-          if [ ${#ASSETS[@]} -eq 0 ]; then
-            echo "No artifacts found to upload" >&2
-            exit 1
-          fi
-          EXTRA=()
-          [ "$PRERELEASE" = "true" ] && EXTRA+=(--prerelease)
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" "${ASSETS[@]}" --clobber
-          else
-            gh release create "$TAG" "${ASSETS[@]}" --title "$TAG" --generate-notes "${EXTRA[@]}"
-          fi
