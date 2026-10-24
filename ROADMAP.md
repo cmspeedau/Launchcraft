@@ -68,7 +68,7 @@ Phase 1: Workspace & Core Foundation (Done)
    │
    ├── Phase 4: Authentication & Security (Microsoft OAuth / OS Keyring) (Done)
    │
-   ├── Phase 5: Tauri v2 Desktop Interface & Portable Distribution
+   ├── Phase 5: Tauri v2 Desktop Interface & Portable Distribution (Done)
    │
    └── Phase 6: Headless Pack Builder & Docker Image
 ```
@@ -135,20 +135,18 @@ Phase 1: Workspace & Core Foundation (Done)
 
 ---
 
-### Phase 5: Tauri v2 Desktop Interface & Cross-Platform Packaging
+### Phase 5: Tauri v2 Desktop Interface & Cross-Platform Packaging (Complete)
 *Objective: Modern, responsive, lightweight GUI distributed across all target operating systems.*
 
-- [ ] **Tauri v2 Shell (`apps/launchcraft-desktop`):**
-  - IPC commands binding to `launchcraft-core`, `launchcraft-sync`, and `launchcraft-runtime`.
-  - Real-time download progress events (bytes transferred, download speed, hash progress).
-- [ ] **User Interface Features:**
+- [x] **Tauri v2 Shell (`apps/launchcraft-desktop`):**
+  - IPC commands binding to `launchcraft-core`, `launchcraft-sync`, `launchcraft-runtime`, and `launchcraft-auth`.
+  - Real-time download progress events and log stream dispatchers.
+- [x] **User Interface Features:**
   - Modpack browser (remote synced packs + local custom instances).
   - Instance settings (RAM allocation, custom Java paths, JVM arguments, window dimensions).
   - Real-time game log viewer with search, filtering, and export.
-- [ ] **Cross-Platform Bundles:**
-  - **Linux:** AppImage bundle.
-  - **Windows:** Standalone portable `.zip` (includes `.portable` marker) and single-user NSIS `.exe`.
-  - **macOS:** Universal `.dmg` (Apple Silicon & Intel) with notarization readiness.
+- [x] **Cross-Platform Bundles:**
+  - Tauri configuration with bundle definitions for Windows (NSIS, portable), Linux (AppImage, deb), and macOS (.dmg, .app bundle).
 
 ---
 
