@@ -1,0 +1,29 @@
+[package]
+name = "launchcraft-builder"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "launchcraft-builder"
+path = "src/main.rs"
+
+[dependencies]
+launchcraft-core = { path = "../launchcraft-core" }
+launchcraft-sync = { path = "../launchcraft-sync" }
+
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+clap = { workspace = true }
+blake3 = { workspace = true }
+zstd = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+walkdir = { workspace = true }
+rayon = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+tempfile = { workspace = true }
