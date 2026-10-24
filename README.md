@@ -112,7 +112,7 @@ docker run --rm \
 - `libzstd` development libraries:
   - **Debian / Ubuntu:** `sudo apt-get install libzstd-dev`
   - **Fedora:** `sudo dnf install libzstd-devel`
-  - **macOS:** `brew install zstd`
+  - **macOS:** `brew install zstd` (Apple Silicon only)
   - **Windows:** Bundled automatically via Cargo
 
 ### Building and Testing
