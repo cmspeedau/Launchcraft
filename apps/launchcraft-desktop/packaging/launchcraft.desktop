@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Launchcraft
+GenericName=Modpack Launcher
+Comment=Minecraft modpack launcher and manager
+Exec=AppRun %U
+Icon=launchcraft
+Terminal=true
+Categories=Game;Utility;
+Keywords=minecraft;modpack;launcher;
+StartupNotify=false

@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#22304f"/>
+      <stop offset="1" stop-color="#0f1526"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="96" fill="url(#bg)"/>
+  <!-- modpack crate (isometric) -->
+  <g>
+    <path d="M296 96 L416 156 L416 276 L296 336 L176 276 L176 156 Z" fill="#22c55e"/>
+    <path d="M296 96 L416 156 L296 216 L176 156 Z" fill="#4ade80"/>
+    <path d="M296 216 L416 156 L416 276 L296 336 Z" fill="#16a34a"/>
+    <path d="M296 216 L296 336 L176 276 L176 156 Z" fill="#15803d"/>
+  </g>
+  <!-- letter L -->
+  <path d="M104 336 H168 V440 H288 V472 H104 Z" fill="#e2e8f0"/>
+</svg>

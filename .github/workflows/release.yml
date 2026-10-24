@@ -1,0 +1,220 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to release (e.g. v0.1.0-rc.2)"
+        required: true
+        type: string
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  version:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.v.outputs.tag }}
+      version: ${{ steps.v.outputs.version }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
+    steps:
+      - id: v
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          TAG="$GITHUB_REF_NAME"
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            TAG="$INPUT_TAG"
+          fi
+          VERSION="${TAG#v}"
+          PRE=false
+          case "$VERSION" in
+            *-*) PRE=true ;;
+          esac
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$PRE" >> "$GITHUB_OUTPUT"
+
+  windows:
+    name: Windows portable
+    needs: version
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release -p launchcraft-desktop
+
+      - name: Package portable ZIP
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          New-Item -ItemType Directory dist | Out-Null
+          Copy-Item target/release/launchcraft-desktop.exe dist/Launchcraft.exe
+          Compress-Archive -Path dist/Launchcraft.exe `
+            -DestinationPath "dist/Launchcraft-$VERSION-windows-portable.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-portable
+          path: dist/*.zip
+
+  macos:
+    name: macOS universal
+    needs: version
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build Apple Silicon binary
+        run: cargo build --release -p launchcraft-desktop
+
+      - name: Build Intel binary
+        run: cargo build --release -p launchcraft-desktop --target x86_64-apple-darwin
+
+      - name: Create universal binary and package
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          mkdir dist
+          lipo -create \
+            target/release/launchcraft-desktop \
+            target/x86_64-apple-darwin/release/launchcraft-desktop \
+            -output dist/Launchcraft
+          lipo -info dist/Launchcraft
+          chmod +x dist/Launchcraft
+          zip -j "dist/Launchcraft-${VERSION}-macos-universal.zip" dist/Launchcraft
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-universal
+          path: dist/*.zip
+
+  linux-appimage:
+    name: Linux AppImage
+    needs: version
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libzstd-dev build-essential \
+            squashfs-tools desktop-file-utils librsvg2-bin
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release -p launchcraft-desktop
+
+      - name: Render icons
+        run: |
+          rsvg-convert -w 256 -h 256 \
+            apps/launchcraft-desktop/packaging/launchcraft.svg \
+            -o launchcraft.png
+          desktop-file-validate apps/launchcraft-desktop/packaging/launchcraft.desktop
+
+      - name: Build AppImage with zsync update information
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          ARCH: x86_64
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+          LDAI_UPDATE_INFORMATION: "gh-releases-zsync|cmspeedau|Launchcraft|latest|Launchcraft*AppImage.zsync"
+        run: |
+          wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          chmod +x linuxdeploy-x86_64.AppImage
+          ./linuxdeploy-x86_64.AppImage --appdir AppDir \
+            -e target/release/launchcraft-desktop \
+            -d apps/launchcraft-desktop/packaging/launchcraft.desktop \
+            -i launchcraft.png \
+            --output appimage
+
+      - name: Smoke test AppImage
+        run: |
+          chmod +x Launchcraft-*.AppImage
+          APPIMAGE_EXTRACT_AND_RUN=1 ./Launchcraft-*.AppImage
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-appimage
+          path: |
+            Launchcraft-*.AppImage
+            Launchcraft-*.AppImage.zsync
+
+  docker:
+    name: Docker image
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/launchcraft:${{ needs.version.outputs.version }}
+            ghcr.io/${{ github.repository_owner }}/launchcraft:${{ needs.version.outputs.prerelease == 'true' && 'rc' || 'latest' }}
+
+  release:
+    name: Publish GitHub release
+    needs: [version, windows, macos, linux-appimage]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.version.outputs.tag }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
+        run: |
+          shopt -s nullglob
+          ASSETS=(dist/*)
+          if [ ${#ASSETS[@]} -eq 0 ]; then
+            echo "No artifacts found to upload" >&2
+            exit 1
+          fi
+          EXTRA=()
+          [ "$PRERELEASE" = "true" ] && EXTRA+=(--prerelease)
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${ASSETS[@]}" --clobber
+          else
+            gh release create "$TAG" "${ASSETS[@]}" --title "$TAG" --generate-notes "${EXTRA[@]}"
+          fi
