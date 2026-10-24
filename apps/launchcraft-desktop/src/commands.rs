@@ -3,8 +3,7 @@
 use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use launchcraft_core::instance::{BackupArchiveInfo, InstanceConfig, WorldSaveInfo};
-use launchcraft_auth::types::{DeviceCodeResponse, MinecraftAccount};
-use launchcraft_auth::MinecraftAuthenticator;
+use launchcraft_auth::{DeviceCodeResponse, LaunchcraftAccount, MicrosoftAuthClient};
 use launchcraft_backup::archiver::WorldArchiver;
 use launchcraft_backup::client::BackupSyncClient;
 use launchcraft_backup::inspector::WorldInspector;
@@ -29,8 +28,8 @@ pub struct InstanceSummary {
 /// Retrieve information about launcher paths and portable mode.
 pub async fn get_system_info(state: &AppState) -> Result<SystemInfoResponse, String> {
     Ok(SystemInfoResponse {
-        is_portable: state.paths.is_portable(),
-        root_dir: state.paths.root().to_path_buf(),
+        is_portable: state.paths.is_portable,
+        root_dir: state.paths.root.clone(),
         os: std::env::consts::OS.to_string(),
         arch: std::env::consts::ARCH.to_string(),
     })
@@ -38,7 +37,7 @@ pub async fn get_system_info(state: &AppState) -> Result<SystemInfoResponse, Str
 
 /// List all installed modpack instances.
 pub async fn list_instances(state: &AppState) -> Result<Vec<InstanceSummary>, String> {
-    let instances_dir = state.paths.instances_dir();
+    let instances_dir = state.paths.instances.clone();
     let mut result = Vec::new();
 
     if !instances_dir.exists() {
@@ -73,7 +72,7 @@ pub async fn list_instance_worlds(
     state: &AppState,
     instance_id: String,
 ) -> Result<Vec<WorldSaveInfo>, String> {
-    let instance_dir = state.paths.instances_dir().join(&instance_id);
+    let instance_dir = state.paths.instances.join(&instance_id);
     WorldInspector::scan_worlds(&instance_dir).map_err(|e| e.to_string())
 }
 
@@ -83,7 +82,7 @@ pub async fn create_world_backup(
     instance_id: String,
     world_folder_name: String,
 ) -> Result<BackupArchiveInfo, String> {
-    let instance_dir = state.paths.instances_dir().join(&instance_id);
+    let instance_dir = state.paths.instances.join(&instance_id);
     WorldArchiver::create_backup(&instance_dir, &world_folder_name).map_err(|e| e.to_string())
 }
 
@@ -94,7 +93,7 @@ pub async fn restore_world_backup(
     archive_name: String,
     target_world_name: Option<String>,
 ) -> Result<String, String> {
-    let instance_dir = state.paths.instances_dir().join(&instance_id);
+    let instance_dir = state.paths.instances.join(&instance_id);
     let path = WorldArchiver::restore_backup(
         &instance_dir,
         &archive_name,
@@ -109,7 +108,7 @@ pub async fn list_instance_backups(
     state: &AppState,
     instance_id: String,
 ) -> Result<Vec<BackupArchiveInfo>, String> {
-    let instance_dir = state.paths.instances_dir().join(&instance_id);
+    let instance_dir = state.paths.instances.join(&instance_id);
     WorldArchiver::list_local_backups(&instance_dir).map_err(|e| e.to_string())
 }
 
@@ -119,7 +118,7 @@ pub async fn upload_world_backup(
     instance_id: String,
     archive_name: String,
 ) -> Result<BackupArchiveInfo, String> {
-    let instance_dir = state.paths.instances_dir().join(&instance_id);
+    let instance_dir = state.paths.instances.join(&instance_id);
     let config_path = instance_dir.join("instance.json");
     let cfg_str = std::fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
     let instance_cfg: InstanceConfig = serde_json::from_str(&cfg_str).map_err(|e| e.to_string())?;
@@ -137,7 +136,7 @@ pub async fn download_world_backup(
     instance_id: String,
     archive_name: String,
 ) -> Result<BackupArchiveInfo, String> {
-    let instance_dir = state.paths.instances_dir().join(&instance_id);
+    let instance_dir = state.paths.instances.join(&instance_id);
     let config_path = instance_dir.join("instance.json");
     let cfg_str = std::fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
     let instance_cfg: InstanceConfig = serde_json::from_str(&cfg_str).map_err(|e| e.to_string())?;
@@ -151,27 +150,36 @@ pub async fn download_world_backup(
 
 /// Start Microsoft OAuth Device Code login.
 pub async fn auth_start_device_code() -> Result<DeviceCodeResponse, String> {
-    let client = MinecraftAuthenticator::new("00000000402b5328");
-    client.request_device_code().await.map_err(|e| e.to_string())
+    let client = MicrosoftAuthClient::new(None);
+    client
+        .initiate_device_flow()
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Complete Microsoft OAuth login via device code.
 pub async fn auth_poll_device_code(
     state: &AppState,
     device_code: String,
-) -> Result<MinecraftAccount, String> {
-    let client = MinecraftAuthenticator::new("00000000402b5328");
-    let account = client.authenticate_device_code(&device_code).await.map_err(|e| e.to_string())?;
+) -> Result<LaunchcraftAccount, String> {
+    let client = MicrosoftAuthClient::new(None);
+    let (ms_access_token, refresh_token) = client
+        .poll_device_code_token(&device_code)
+        .await
+        .map_err(|e| e.to_string())?;
+    let account = client
+        .authenticate_minecraft(&ms_access_token, &refresh_token)
+        .await
+        .map_err(|e| e.to_string())?;
 
-    let mut storage = state.accounts.lock().await;
+    let storage = state.accounts.lock().await;
     storage.save_account(account.clone()).map_err(|e| e.to_string())?;
 
     Ok(account)
 }
 
 /// Retrieve currently authenticated accounts.
-pub async fn get_accounts(state: &AppState) -> Result<Vec<MinecraftAccount>, String> {
-    let mut storage = state.accounts.lock().await;
-    let _ = storage.load();
-    Ok(storage.accounts().to_vec())
+pub async fn get_accounts(state: &AppState) -> Result<Vec<LaunchcraftAccount>, String> {
+    let storage = state.accounts.lock().await;
+    storage.list_accounts().map_err(|e| e.to_string())
 }

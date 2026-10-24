@@ -1,4 +1,5 @@
 pub mod instance;
+pub mod manifest;
 pub mod paths;
 pub mod repository;
 

@@ -1,3 +1,4 @@
+use crate::error::{SyncError, SyncResult};
 use std::fs::{self, File};
 use std::io::{self, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -15,7 +16,8 @@ pub enum CasError {
 }
 
 /// Content-Addressable Storage (CAS) engine.
-/// Stores blobs indexed by their hexadecimal BLAKE3 hash: `objects/aa/bb/aabb...`
+/// Stores blobs indexed by their hexadecimal BLAKE3 hash, sharded into two
+/// levels of two characters each: `objects/aa/bb/aabb...`
 #[derive(Debug, Clone)]
 pub struct CasStore {
     base_dir: PathBuf,
@@ -41,10 +43,13 @@ impl CasStore {
         }
         let shard1 = &clean_hash[0..2];
         let shard2 = &clean_hash[2..4];
-        self.objects_dir().join(shard1).join(shard2).join(&clean_hash)
+        self.objects_dir()
+            .join(shard1)
+            .join(shard2)
+            .join(&clean_hash)
     }
 
-    /// Checks if a blob exists and matches the requested size if provided.
+    /// Checks if a blob exists in the CAS.
     pub fn exists(&self, hash: &str) -> bool {
         let path = self.object_path(hash);
         path.is_file()
@@ -67,77 +72,17 @@ impl CasStore {
     }
 
     /// Stores a raw stream/reader directly into the CAS after verifying the BLAKE3 digest.
+    /// The blob is streamed to a temporary file and persisted atomically.
     pub fn store<R: Read>(&self, expected_hash: &str, mut reader: R) -> Result<PathBuf, CasError> {
         let target_path = self.object_path(expected_hash);
         if self.exists(expected_hash) {
-            debug!(hash = expected_hash, "Blob already exists in CAS; skipping store");
+            debug!(
+                hash = expected_hash,
+                "Blob already exists in CAS; skipping store"
+            );
             return Ok(target_path);
         }
 
-use crate::error::{SyncError, SyncResult};
-use std::fs::{self, File};
-use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
-use tracing::{debug, trace};
-
-/// Content-Addressable Storage (CAS) for local blob caching.
-/// Blobs are addressed by their BLAKE3 hash in a sharded structure: `objects/ab/cd/abcdef...`
-pub struct CasStore {
-    root_dir: PathBuf,
-}
-
-impl CasStore {
-    pub fn new<P: AsRef<Path>>(root_dir: P) -> Self {
-        Self {
-            root_dir: root_dir.as_ref().to_path_buf(),
-        }
-    }
-
-    /// Returns the storage path for a given BLAKE3 hash.
-    pub fn object_path(&self, hash: &str) -> PathBuf {
-        let clean_hash = hash.to_lowercase();
-        if clean_hash.len() >= 4 {
-            self.root_dir
-                .join("objects")
-                .join(&clean_hash[0..2])
-                .join(&clean_hash[2..4])
-                .join(&clean_hash)
-        } else {
-            self.root_dir.join("objects").join(&clean_hash)
-        }
-    }
-
-    /// Checks if a blob exists in the CAS.
-    pub fn exists(&self, hash: &str) -> bool {
-        self.object_path(hash).is_file()
-    }
-
-    /// Stores a raw stream/buffer into CAS, verifying BLAKE3 integrity.
-    /// If `is_zstd_compressed` is true, decompress it before verifying against `expected_hash`.
-    pub fn put_blob(
-        &self,
-        raw_bytes: &[u8],
-        expected_hash: &str,
-        is_zstd_compressed: bool,
-    ) -> SyncResult<PathBuf> {
-        let decompressed: Vec<u8> = if is_zstd_compressed {
-            zstd::decode_all(raw_bytes)
-                .map_err(|e| SyncError::Decompression(format!("Failed to decompress zstd payload: {e}")))?
-        } else {
-            raw_bytes.to_vec()
-        };
-
-        // Compute BLAKE3
-        let actual_hash = blake3::hash(&decompressed).to_hex().to_string();
-        if !actual_hash.eq_ignore_ascii_case(expected_hash) {
-            return Err(SyncError::HashMismatch {
-                file: expected_hash.to_string(),
-                expected: expected_hash.to_lowercase(),
-                actual: actual_hash,
-            });
-        }
-
-        let target_path = self.object_path(expected_hash);
         if let Some(parent) = target_path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -145,20 +90,23 @@ impl CasStore {
         let temp_dir = self.base_dir.join(".tmp");
         fs::create_dir_all(&temp_dir)?;
         let temp_file = tempfile::NamedTempFile::new_in(&temp_dir)?;
-        let mut temp_writer = std::io::BufWriter::new(temp_file.as_file());
 
         let mut hasher = blake3::Hasher::new();
         let mut buffer = [0u8; 64 * 1024];
 
-        loop {
-            let n = reader.read(&mut buffer)?;
-            if n == 0 {
-                break;
+        // Scope the writer so its borrow of the temp file ends before persist.
+        {
+            let mut temp_writer = std::io::BufWriter::new(temp_file.as_file());
+            loop {
+                let n = reader.read(&mut buffer)?;
+                if n == 0 {
+                    break;
+                }
+                hasher.update(&buffer[..n]);
+                temp_writer.write_all(&buffer[..n])?;
             }
-            hasher.update(&buffer[..n]);
-            temp_writer.write_all(&buffer[..n])?;
+            temp_writer.flush()?;
         }
-        temp_writer.flush()?;
 
         let actual_hash = hasher.finalize().to_hex().to_string();
         if !actual_hash.eq_ignore_ascii_case(expected_hash) {
@@ -187,27 +135,6 @@ impl CasStore {
             return Err(CasError::Io(io::Error::new(
                 io::ErrorKind::NotFound,
                 format!("CAS object {} not found", hash),
-        // Write atomically via temporary file
-        let tmp_path = target_path.with_extension(format!("tmp.{}", std::process::id()));
-        {
-            let mut file = File::create(&tmp_path)?;
-            file.write_all(&decompressed)?;
-            file.flush()?;
-        }
-        fs::rename(tmp_path, &target_path)?;
-
-        debug!(hash = %expected_hash, path = ?target_path, "Stored blob in CAS");
-        Ok(target_path)
-    }
-
-    /// Materializes a CAS blob into a target file path.
-    /// Attempts hard-linking first (saving disk space), falling back to fast copy.
-    pub fn materialize_file(&self, hash: &str, destination: &Path) -> SyncResult<()> {
-        let src = self.object_path(hash);
-        if !src.is_file() {
-            return Err(SyncError::Instance(format!(
-                "Object with hash {} not found in CAS store",
-                hash
             )));
         }
 
@@ -215,7 +142,6 @@ impl CasStore {
             fs::create_dir_all(parent)?;
         }
 
-        // If target already exists, remove it first
         if destination.exists() {
             let _ = fs::remove_file(destination);
         }
@@ -233,25 +159,51 @@ impl CasStore {
                 );
                 fs::copy(&source, destination)?;
                 info!(source = ?source, dest = ?destination, "Deployed CAS blob via copy");
-        // Try hard-link
-        match fs::hard_link(&src, destination) {
-            Ok(_) => {
-                trace!(source = ?src, destination = ?destination, "Hard-linked blob to destination");
-                Ok(())
-            }
-            Err(_) => {
-                // Hard-link fails across filesystem boundaries; fallback to file copy
-                fs::copy(&src, destination)?;
-                trace!(source = ?src, destination = ?destination, "Copied blob to destination");
                 Ok(())
             }
         }
+    }
+
+    /// Stores a raw buffer into the CAS, verifying BLAKE3 integrity.
+    /// If `is_zstd_compressed` is true, the payload is decompressed before it is
+    /// verified against `expected_hash`.
+    pub fn put_blob(
+        &self,
+        raw_bytes: &[u8],
+        expected_hash: &str,
+        is_zstd_compressed: bool,
+    ) -> SyncResult<PathBuf> {
+        let result = if is_zstd_compressed {
+            self.store_zstd(expected_hash, raw_bytes)
+        } else {
+            self.store(expected_hash, raw_bytes)
+        };
+
+        result.map_err(|err| match err {
+            CasError::Io(io_err) => SyncError::Io(io_err),
+            CasError::HashMismatch { hash, actual } => SyncError::HashMismatch {
+                file: hash,
+                expected: expected_hash.to_lowercase(),
+                actual,
+            },
+            CasError::Decompress(io_err) => SyncError::Decompression(io_err.to_string()),
+        })
+    }
+
+    /// Materializes a CAS blob into a target file path.
+    /// Attempts hard-linking first (saving disk space), falling back to file copy.
+    pub fn materialize_file(&self, hash: &str, destination: &Path) -> SyncResult<()> {
+        self.deploy_to(hash, destination).map_err(|err| match err {
+            CasError::Io(io_err) => SyncError::Io(io_err),
+            other => SyncError::Instance(other.to_string()),
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     #[test]
     fn test_cas_store_and_verify() {
@@ -270,7 +222,7 @@ mod tests {
         let dest = temp_dir.path().join("instances/pack/config/test.txt");
         cas.deploy_to(&expected_hash, &dest).unwrap();
         assert_eq!(fs::read(&dest).unwrap(), payload);
-    use tempfile::tempdir;
+    }
 
     #[test]
     fn test_cas_put_and_materialize() {

@@ -87,3 +87,31 @@ pub struct ModLoaderConfig {
     pub loader_type: String, // "fabric", "neoforge", "forge", "quilt"
     pub loader_version: String,
 }
+
+/// A single file entry within a synced pack manifest.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FileEntry {
+    /// Normalized (`/`-separated) path of the file relative to the game directory.
+    pub path: String,
+    /// BLAKE3 hash of the uncompressed content.
+    pub hash: String,
+    /// Uncompressed size in bytes.
+    pub size: u64,
+    /// Encoding of the stored CAS object, e.g. `"zstd"`, when compressed.
+    #[serde(default)]
+    pub compressed: Option<String>,
+}
+
+/// Pack manifest fetched from a remote repository for instance synchronization.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Manifest {
+    pub files: Vec<FileEntry>,
+}
+
+/// Configuration of the remote repository an instance syncs from.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RepositoryConfig {
+    pub url: String,
+    #[serde(default)]
+    pub etag: Option<String>,
+}

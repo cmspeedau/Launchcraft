@@ -8,6 +8,9 @@ pub enum BuilderError {
     #[error("JSON serialization error: {0}")]
     Json(#[from] serde_json::Error),
 
+    #[error("Directory walk error: {0}")]
+    Walk(#[from] walkdir::Error),
+
     #[error("Compression error: {0}")]
     Compression(String),
 

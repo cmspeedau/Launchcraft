@@ -1,7 +1,9 @@
+use crate::whitelist::WhitelistMatcher;
+use launchcraft_core::instance::{FileEntry, Manifest};
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
-use std::io::{self, BufReader};
+use std::io::{self, BufReader, Read};
 use std::path::{Path, PathBuf};
 use tracing::debug;
 use walkdir::WalkDir;
@@ -139,7 +141,7 @@ pub fn compute_diff(
         });
     }
 
-    for (local_path, _) in local_files {
+    for local_path in local_files.keys() {
         if !expected_map.contains(local_path) && !is_protected_user_path(local_path) {
             diff.to_delete.push(SyncAction::Delete {
                 rel_path: local_path.clone(),
@@ -157,51 +159,6 @@ pub fn compute_diff(
     diff
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_preserved_paths() {
-        assert!(is_protected_user_path("options.txt"));
-        assert!(is_protected_user_path("saves/World1/level.dat"));
-        assert!(is_protected_user_path("screenshots/pic.png"));
-        assert!(!is_protected_user_path("mods/jei.jar"));
-    }
-
-    #[test]
-    fn test_compute_diff() {
-        let mut local = HashMap::new();
-        local.insert("mods/foo.jar".to_string(), "hash_a".to_string());
-        local.insert("mods/old.jar".to_string(), "hash_old".to_string());
-
-        let expected = vec![
-            ("mods/foo.jar".to_string(), "hash_a".to_string(), 100, false),
-            ("mods/bar.jar".to_string(), "hash_b".to_string(), 200, true),
-        ];
-
-        let diff = compute_diff(&local, &expected);
-        assert_eq!(diff.unchanged.len(), 1);
-        assert_eq!(diff.to_download.len(), 1);
-        assert_eq!(diff.to_delete.len(), 1);
-use crate::whitelist::WhitelistMatcher;
-use launchcraft_core::instance::{FileEntry, Manifest};
-use std::collections::HashMap;
-use std::fs::File;
-use std::io::Read;
-use std::path::{Path, PathBuf};
-use walkdir::WalkDir;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SyncAction {
-    /// File is already in place with matching hash
-    Keep { path: String },
-    /// File needs to be downloaded or materialized from CAS
-    Download(FileEntry),
-    /// Extraneous file on disk that is not in manifest and not whitelisted
-    Delete { relative_path: String, full_path: PathBuf },
-}
-
 #[derive(Debug, Default)]
 pub struct SyncPlan {
     pub keep_count: usize,
@@ -209,6 +166,8 @@ pub struct SyncPlan {
     pub deletions: Vec<PathBuf>,
 }
 
+/// Compares local instance state against a target manifest, honoring the
+/// user-file whitelist when scheduling deletions.
 pub struct InstanceDiffer {
     whitelist: WhitelistMatcher,
 }
@@ -219,7 +178,7 @@ impl InstanceDiffer {
     }
 
     /// Hash a local file using BLAKE3
-    pub fn compute_file_hash(path: &Path) -> std::io::Result<String> {
+    pub fn compute_file_hash(path: &Path) -> io::Result<String> {
         let mut file = File::open(path)?;
         let mut hasher = blake3::Hasher::new();
         let mut buffer = [0u8; 65536];
@@ -240,7 +199,7 @@ impl InstanceDiffer {
         &self,
         game_dir: &Path,
         target_manifest: &Manifest,
-    ) -> std::io::Result<SyncPlan> {
+    ) -> io::Result<SyncPlan> {
         let mut plan = SyncPlan::default();
 
         // Index manifest entries by normalized relative path
@@ -253,7 +212,11 @@ impl InstanceDiffer {
         // Scan current local files
         let mut local_found: HashMap<String, PathBuf> = HashMap::new();
         if game_dir.is_dir() {
-            for entry in WalkDir::new(game_dir).follow_links(false).into_iter().filter_map(|e| e.ok()) {
+            for entry in WalkDir::new(game_dir)
+                .follow_links(false)
+                .into_iter()
+                .filter_map(|e| e.ok())
+            {
                 if !entry.file_type().is_file() {
                     continue;
                 }
@@ -294,5 +257,35 @@ impl InstanceDiffer {
         }
 
         Ok(plan)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_preserved_paths() {
+        assert!(is_protected_user_path("options.txt"));
+        assert!(is_protected_user_path("saves/World1/level.dat"));
+        assert!(is_protected_user_path("screenshots/pic.png"));
+        assert!(!is_protected_user_path("mods/jei.jar"));
+    }
+
+    #[test]
+    fn test_compute_diff() {
+        let mut local = HashMap::new();
+        local.insert("mods/foo.jar".to_string(), "hash_a".to_string());
+        local.insert("mods/old.jar".to_string(), "hash_old".to_string());
+
+        let expected = vec![
+            ("mods/foo.jar".to_string(), "hash_a".to_string(), 100, false),
+            ("mods/bar.jar".to_string(), "hash_b".to_string(), 200, true),
+        ];
+
+        let diff = compute_diff(&local, &expected);
+        assert_eq!(diff.unchanged.len(), 1);
+        assert_eq!(diff.to_download.len(), 1);
+        assert_eq!(diff.to_delete.len(), 1);
     }
 }
