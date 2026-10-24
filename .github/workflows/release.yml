@@ -56,8 +56,8 @@ jobs:
         run: |
           EXTRA=()
           [ "$PRERELEASE" = "true" ] && EXTRA+=(--prerelease)
-          if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" --title "$TAG" --generate-notes "${EXTRA[@]}"
+          if ! gh --repo "$GITHUB_REPOSITORY" release view "$TAG" >/dev/null 2>&1; then
+            gh --repo "$GITHUB_REPOSITORY" release create "$TAG" --title "$TAG" --generate-notes "${EXTRA[@]}"
           fi
 
   windows:
