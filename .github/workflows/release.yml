@@ -84,9 +84,15 @@ jobs:
         run: |
           New-Item -ItemType Directory dist | Out-Null
           Copy-Item target/release/launchcraft-desktop.exe dist/Launchcraft.exe
-          Compress-Archive -Path dist/Launchcraft.exe `
-            -DestinationPath "dist/Launchcraft-$VERSION-windows-portable.zip"
-          gh release upload "$TAG" "dist/Launchcraft-$VERSION-windows-portable.zip" --clobber
+          $asset = "dist/Launchcraft-${VERSION}-windows-portable.zip"
+          Compress-Archive -Path dist/Launchcraft.exe -DestinationPath $asset
+          # Transient GitHub API 404/5xx can surface during concurrent uploads.
+          for ($i = 1; $i -le 5; $i++) {
+            gh --repo $env:GITHUB_REPOSITORY release upload $TAG $asset --clobber
+            if ($LASTEXITCODE -eq 0) { break }
+            if ($i -eq 5) { exit 1 }
+            Start-Sleep -Seconds (5 * $i)
+          }
 
   macos:
     name: macOS universal
@@ -122,7 +128,12 @@ jobs:
           lipo -info dist/Launchcraft
           chmod +x dist/Launchcraft
           zip -j "dist/Launchcraft-${VERSION}-macos-universal.zip" dist/Launchcraft
-          gh release upload "$TAG" "dist/Launchcraft-${VERSION}-macos-universal.zip" --clobber
+          for i in 1 2 3 4 5; do
+            gh --repo "$GITHUB_REPOSITORY" release upload "$TAG" \
+              "dist/Launchcraft-${VERSION}-macos-universal.zip" --clobber && break
+            [ "$i" = 5 ] && exit 1
+            sleep $((i * 5))
+          done
 
   linux-appimage:
     name: Linux AppImage
@@ -177,7 +188,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.version.outputs.tag }}
-        run: gh release upload "$TAG" Launchcraft-*.AppImage Launchcraft-*.AppImage.zsync --clobber
+        run: |
+          for i in 1 2 3 4 5; do
+            gh --repo "$GITHUB_REPOSITORY" release upload "$TAG" \
+              Launchcraft-*.AppImage Launchcraft-*.AppImage.zsync --clobber && break
+            [ "$i" = 5 ] && exit 1
+            sleep $((i * 5))
+          done
 
   docker:
     name: Docker image
