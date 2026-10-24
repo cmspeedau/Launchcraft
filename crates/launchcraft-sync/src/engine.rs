@@ -3,6 +3,7 @@ use crate::diff::InstanceDiffer;
 use crate::error::{SyncError, SyncResult};
 use crate::whitelist::WhitelistMatcher;
 use launchcraft_core::instance::{FileEntry, Manifest, RepositoryConfig};
+use launchcraft_core::manifest::PackManifest;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -54,7 +55,7 @@ impl SyncEngine {
     }
 
     /// Fetch remote repository index and pack manifest
-    pub async fn fetch_remote_manifest(&self, repo: &RepositoryConfig) -> SyncResult<Manifest> {
+    pub async fn fetch_remote_manifest(&self, repo: &RepositoryConfig) -> SyncResult<PackManifest> {
         let url = format!("{}/manifest.json", repo.url.trim_end_matches('/'));
         info!(url = %url, "Querying remote modpack manifest");
 
@@ -71,7 +72,7 @@ impl SyncEngine {
             });
         }
 
-        let manifest: Manifest = response.json().await?;
+        let manifest: PackManifest = response.json().await?;
         Ok(manifest)
     }
 
@@ -80,11 +81,12 @@ impl SyncEngine {
         &self,
         base_url: &str,
         game_dir: &Path,
-        manifest: &Manifest,
+        manifest: &PackManifest,
         progress_cb: Option<Arc<dyn Fn(SyncProgress) + Send + Sync>>,
     ) -> SyncResult<()> {
         let differ = InstanceDiffer::new(self.whitelist.clone());
-        let plan = differ.diff_instance(game_dir, manifest)?;
+        let sync_manifest = Manifest::from(manifest);
+        let plan = differ.diff_instance(game_dir, &sync_manifest)?;
 
         info!(
             keep = plan.keep_count,
@@ -142,8 +144,12 @@ impl SyncEngine {
         Ok(())
     }
 
-    async fn download_entry_to_cas(&self, base_url: &str, entry: &FileEntry) -> SyncResult<PathBuf> {
-        let object_url = format!("{}/objects/{}", base_url.trim_end_matches('/'), entry.hash);
+    async fn download_entry_to_cas(
+        &self,
+        base_url: &str,
+        entry: &FileEntry,
+    ) -> SyncResult<PathBuf> {
+        let object_url = CasStore::remote_object_url(base_url, &entry.hash);
         debug!(url = %object_url, "Downloading blob into CAS");
 
         let response = self.client.get(&object_url).send().await?;

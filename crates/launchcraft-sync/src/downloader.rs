@@ -52,7 +52,7 @@ impl CasDownloader {
             return Ok(());
         }
 
-        let url = format!("{}/objects/{}", base_url.trim_end_matches('/'), hash);
+        let url = CasStore::remote_object_url(base_url, hash);
         debug!(url = %url, hash = %hash, "Downloading blob to CAS");
 
         let response = self.client.get(&url).send().await?.error_for_status()?;
@@ -69,7 +69,7 @@ impl CasDownloader {
             }
         })
         .await
-        .map_err(|e| DownloaderError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))??;
+        .map_err(|e| DownloaderError::Io(std::io::Error::other(e)))??;
 
         Ok(())
     }

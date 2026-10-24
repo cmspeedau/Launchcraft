@@ -127,6 +127,19 @@ impl CasStore {
         self.store(expected_hash, decoder)
     }
 
+    /// Resolves the remote URL of a CAS object on a pack repository server.
+    /// Builder output stores blobs sharded by the first two hash characters
+    /// under `cas/objects/`, e.g. `<base>/cas/objects/ab/abcdef...`.
+    pub fn remote_object_url(base_url: &str, hash: &str) -> String {
+        let clean_hash = hash.trim().to_lowercase();
+        let base = base_url.trim_end_matches('/');
+        if clean_hash.len() >= 2 {
+            format!("{}/cas/objects/{}/{}", base, &clean_hash[0..2], clean_hash)
+        } else {
+            format!("{}/cas/objects/{}", base, clean_hash)
+        }
+    }
+
     /// Links or copies a CAS blob into a target file path (e.g., inside instance/minecraft).
     /// Tries hard links first for zero-overhead instant deployment; falls back to copy.
     pub fn deploy_to(&self, hash: &str, destination: &Path) -> Result<(), CasError> {
@@ -204,6 +217,18 @@ impl CasStore {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn test_remote_object_url_matches_builder_layout() {
+        assert_eq!(
+            CasStore::remote_object_url("http://host:8080/", "ABCD1234"),
+            "http://host:8080/cas/objects/ab/abcd1234"
+        );
+        assert_eq!(
+            CasStore::remote_object_url("http://host", "ab"),
+            "http://host/cas/objects/ab/ab"
+        );
+    }
 
     #[test]
     fn test_cas_store_and_verify() {

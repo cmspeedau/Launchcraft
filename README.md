@@ -128,14 +128,11 @@ curl http://localhost:8080/cas/objects/<xx>/<blake3-hash>
 ```
 
 Launchers point their repository configuration at `http://localhost:8080`.
-The served layout (`manifest.json` + `cas/objects/`) is exactly what the
-builder writes to `./dist`, ready for S3, nginx, or any static CDN.
-
-> **Pre-release note:** the sync engine's remote-fetch paths
-> (`/objects/<hash>`, array-shaped manifest) do not yet match what the
-> builder emits (`/cas/objects/<xx>/<hash>`, path-keyed manifest); engine-side
-> alignment of the repository URL scheme is tracked as a follow-up. Static
-> serving itself is fully functional.
+The sync engine fetches exactly this layout: the path-keyed `manifest.json`
+at the root and zstd-encoded blobs at `/cas/objects/<xx>/<blake3-hash>`, so
+the builder → server → client round-trip is covered end-to-end by the
+workspace test suite. The same layout is ready for S3, nginx, or any static
+CDN — no path rewriting required.
 
 ---
 
