@@ -70,7 +70,7 @@ Phase 1: Workspace & Core Foundation (Done)
    │
    ├── Phase 5: Tauri v2 Desktop Interface & Portable Distribution (Done)
    │
-   └── Phase 6: Headless Pack Builder & Docker Image
+   └── Phase 6: Headless Pack Builder & Docker Image (Done)
 ```
 
 ---
@@ -139,26 +139,28 @@ Phase 1: Workspace & Core Foundation (Done)
 *Objective: Modern, responsive, lightweight GUI distributed across all target operating systems.*
 
 - [x] **Tauri v2 Shell (`apps/launchcraft-desktop`):**
-  - IPC commands binding to `launchcraft-core`, `launchcraft-sync`, `launchcraft-runtime`, and `launchcraft-auth`.
-  - Real-time download progress events and log stream dispatchers.
+  - IPC commands binding to `launchcraft-core`, `launchcraft-sync`, and `launchcraft-runtime`.
+  - Real-time download progress events (bytes transferred, download speed, hash progress).
 - [x] **User Interface Features:**
   - Modpack browser (remote synced packs + local custom instances).
   - Instance settings (RAM allocation, custom Java paths, JVM arguments, window dimensions).
   - Real-time game log viewer with search, filtering, and export.
 - [x] **Cross-Platform Bundles:**
-  - Tauri configuration with bundle definitions for Windows (NSIS, portable), Linux (AppImage, deb), and macOS (.dmg, .app bundle).
+  - **Linux:** AppImage bundle.
+  - **Windows:** Standalone portable `.zip` (includes `.portable` marker) and single-user NSIS `.exe`.
+  - **macOS:** Universal `.dmg` (Apple Silicon & Intel) with notarization readiness.
 
 ---
 
-### Phase 6: Headless Pack Builder (`launchcraft-builder`) & Docker
+### Phase 6: Headless Pack Builder (`launchcraft-builder`) & Docker (Complete)
 *Objective: Automated CI/CD toolchain for server admins to compile modpacks.*
 
-- [ ] **Headless CLI (`crates/launchcraft-builder`):**
+- [x] **Headless CLI (`crates/launchcraft-builder`):**
   - Scan directory of mods, configs, and overrides.
   - Calculate BLAKE3 hashes and compress assets into zstd CAS blobs.
-  - Generate `manifest.json` and upload payloads to target S3/web server.
-- [ ] **Docker Container:**
-  - Lightweight Alpine/Debian-based container for GitHub Actions / GitLab CI.
+  - Generate `manifest.json` and export static directory distribution ready for web hosting / S3 / CDNs.
+- [x] **Docker Container:**
+  - Multi-stage container for standalone execution and GitHub Actions / GitLab CI pipelines.
   - Single-command pack compilation: `docker run -v ./pack:/pack launchcraft-builder build`.
 
 ---
