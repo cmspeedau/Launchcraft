@@ -75,24 +75,31 @@ jobs:
       - name: Build release binary
         run: cargo build --release -p launchcraft-desktop
 
-      - name: Package portable ZIP and attach to release
+      - name: Package portable ZIP
         shell: pwsh
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          New-Item -ItemType Directory dist | Out-Null
+          Copy-Item target/release/launchcraft-desktop.exe dist/Launchcraft.exe
+          Compress-Archive -Path dist/Launchcraft.exe `
+            -DestinationPath "dist/Launchcraft-$env:VERSION-windows-portable.zip"
+          Get-Item dist/*.zip | Select-Object Name, Length
+
+      - name: Attach to release
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.version.outputs.version }}
           TAG: ${{ needs.version.outputs.tag }}
         run: |
-          New-Item -ItemType Directory dist | Out-Null
-          Copy-Item target/release/launchcraft-desktop.exe dist/Launchcraft.exe
-          $asset = "dist/Launchcraft-${VERSION}-windows-portable.zip"
-          Compress-Archive -Path dist/Launchcraft.exe -DestinationPath $asset
-          # Transient GitHub API 404/5xx can surface during concurrent uploads.
-          for ($i = 1; $i -le 5; $i++) {
-            gh --repo $env:GITHUB_REPOSITORY release upload $TAG $asset --clobber
-            if ($LASTEXITCODE -eq 0) { break }
-            if ($i -eq 5) { exit 1 }
-            Start-Sleep -Seconds (5 * $i)
-          }
+          # Retry: concurrent uploads can draw transient GitHub API errors.
+          for i in 1 2 3 4 5; do
+            gh --repo "$GITHUB_REPOSITORY" release upload "$TAG" \
+              "dist/Launchcraft-${VERSION}-windows-portable.zip" --clobber && break
+            [ "$i" = 5 ] && exit 1
+            sleep $((i * 5))
+          done
 
   macos:
     name: macOS universal
