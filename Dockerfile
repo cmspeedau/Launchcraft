@@ -7,7 +7,7 @@ RUN apk add --no-cache musl-dev gcc g++ make zstd-dev
 
 WORKDIR /usr/src/launchcraft
 
-COPY Cargo.toml Cargo.lock ./
+COPY Cargo.toml ./
 COPY crates ./crates
 COPY apps ./apps
 
