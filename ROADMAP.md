@@ -62,7 +62,7 @@ Installed Mode (Standard OS defaults):
 ```
 Phase 1: Workspace & Core Foundation (Done)
    │
-   ├── Phase 2: Sync Engine & Content-Addressable Storage (CAS)
+   ├── Phase 2: Sync Engine & Content-Addressable Storage (CAS) (Done)
    │
    ├── Phase 3: JRE Management & Minecraft Process Launching
    │
@@ -82,26 +82,26 @@ Phase 1: Workspace & Core Foundation (Done)
 
 ---
 
-### Phase 2: Sync Engine & Content-Addressable Storage (CAS)
+### Phase 2: Sync Engine & Content-Addressable Storage (CAS) (Complete)
 *Objective: Replace old-school ZIP/file re-downloads with fast, incremental, parallel BLAKE3 delta sync.*
 
-- [ ] **Content-Addressable Storage (CAS):**
+- [x] **Content-Addressable Storage (CAS):**
   - Download blobs indexed by BLAKE3 hashes.
   - Decompress `zstd` compressed stream payloads on the fly.
   - Implement hard-linking / fast file copying from CAS store to instance `minecraft/` folders to save disk space across multiple instances.
-- [ ] **Incremental Fast Delta Sync:**
+- [x] **Incremental Fast Delta Sync:**
   - Read local directory manifest; compute BLAKE3 hashes in parallel using Rayon or Tokio tasks.
   - Diff local state against remote pack manifest:
     - Unchanged files: skip.
     - Added / modified: queue parallel download from CDN/CAS.
     - Extraneous files: remove (respecting user-whitelisted files like `saves/`, `screenshots/`, `options.txt`, local keybinds).
-- [ ] **Dynamic Repository Discovery:**
+- [x] **Dynamic Repository Discovery:**
   - Query remote repository endpoints via HTTP ETag / version hashes.
   - Support auto-updating modpack definitions without requiring client updates.
 
 ---
 
-### Phase 3: JRE Provisioning & Process Execution
+### Phase 3: JRE Provisioning & Process Execution (In Progress)
 *Objective: Reliable, sandbox-aware Minecraft execution across Windows, macOS, and Linux.*
 
 - [ ] **Runtime Manager (`launchcraft-runtime`):**
