@@ -64,7 +64,7 @@ Phase 1: Workspace & Core Foundation (Done)
    │
    ├── Phase 2: Sync Engine & Content-Addressable Storage (CAS) (Done)
    │
-   ├── Phase 3: JRE Management & Minecraft Process Launching
+   ├── Phase 3: JRE Management & Minecraft Process Launching (Done)
    │
    ├── Phase 4: Authentication & Security (Microsoft OAuth / OS Keyring)
    │
@@ -101,17 +101,17 @@ Phase 1: Workspace & Core Foundation (Done)
 
 ---
 
-### Phase 3: JRE Provisioning & Process Execution (In Progress)
+### Phase 3: JRE Provisioning & Process Execution (Complete)
 *Objective: Reliable, sandbox-aware Minecraft execution across Windows, macOS, and Linux.*
 
-- [ ] **Runtime Manager (`launchcraft-runtime`):**
+- [x] **Runtime Manager (`launchcraft-runtime`):**
   - Automatically detect host OS (`windows`, `macos`, `linux`) and architecture (`x86_64`, `aarch64`).
   - Query and download correct JRE distributions (Java 8, 17, 21) from Adoptium / Zulu APIs.
   - Portable extraction: isolate JREs inside `<root_data_dir>/runtimes/`.
-- [ ] **Minecraft Version Metadata & Library Resolution:**
+- [x] **Minecraft Version Metadata & Library Resolution:**
   - Parse Mojang Version Manifest (`v2`) and Fabric/Forge/NeoForge loaders.
   - Download official Mojang assets and client libraries with parallel hash verification.
-- [ ] **Game Process Spawner:**
+- [x] **Game Process Spawner:**
   - Build classpath and JVM arguments (memory allocation, GC tuning flags, natives).
   - Platform-specific hooks:
     - **macOS:** `-XstartOnFirstThread`, Dock icon integration, App Nap disabling.
