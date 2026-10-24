@@ -1,0 +1,20 @@
+[package]
+name = "launchcraft-desktop"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+launchcraft-core = { path = "../../crates/launchcraft-core" }
+launchcraft-sync = { path = "../../crates/launchcraft-sync" }
+launchcraft-runtime = { path = "../../crates/launchcraft-runtime" }
+launchcraft-auth = { path = "../../crates/launchcraft-auth" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
