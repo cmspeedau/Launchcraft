@@ -1,0 +1,8 @@
+target/
+**/*.rs.bk
+Cargo.lock
+
+# App local runtime data
+data/
+.portable
+*.log
