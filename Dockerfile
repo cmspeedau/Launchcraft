@@ -1,7 +1,7 @@
 # ------------------------------------------------------------------------------
 # Build Stage
 # ------------------------------------------------------------------------------
-FROM rust:1.80-slim-bookworm AS builder
+FROM rust:1.80-bookworm AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
@@ -16,7 +16,7 @@ COPY Cargo.toml Cargo.lock* ./
 COPY crates ./crates
 COPY apps ./apps
 
-RUN cargo build --release -p launchcraft-builder
+RUN cargo build --release -p launchcraft-builder --verbose
 
 # ------------------------------------------------------------------------------
 # Runtime Stage
