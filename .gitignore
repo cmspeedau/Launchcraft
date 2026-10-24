@@ -6,3 +6,5 @@ Cargo.lock
 data/
 .portable
 *.log
+pack/
+dist/

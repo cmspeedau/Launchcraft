@@ -1,0 +1,37 @@
+# Launchcraft headless modpack builder.
+#
+# The `builder` service is a one-shot job, so use `docker compose run`:
+#
+#   docker compose run --rm builder init \
+#       --path /workspace/pack/pack.json             # scaffold build config
+#   docker compose run --rm builder                  # build ./pack -> ./dist
+#   docker compose run --rm builder build \
+#       --config /workspace/pack/pack.json           # build with explicit config
+#
+# The image published by the release workflow is private (the repository is);
+# either `docker login ghcr.io` first, or let Compose build it locally from
+# the Dockerfile in this repository (the default when the image is absent).
+#
+# Notes:
+#   - The container runs as root, so files written into ./dist are root-owned.
+#   - RUST_LOG=debug docker compose run --rm builder   # verbose logging
+
+name: launchcraft
+
+services:
+  builder:
+    # Published image, falling back to a local build of this Dockerfile
+    # when the image is not present. Pin a version (e.g. :v0.1.0-rc.2)
+    # for reproducible builds.
+    image: ghcr.io/cmspeedau/launchcraft:rc
+    build: .
+    pull_policy: missing
+    working_dir: /workspace
+    volumes:
+      - ./pack:/workspace/pack
+      - ./dist:/workspace/dist
+    environment:
+      RUST_LOG: ${RUST_LOG:-info}
+    # One-shot build tool: exit normally, never restart.
+    init: true
+    restart: "no"
