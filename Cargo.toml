@@ -23,3 +23,7 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 uuid = { version = "1.8", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
+zstd = "0.13"
+rayon = "1.10"
+futures-util = "0.3"
+tempfile = "3.10"

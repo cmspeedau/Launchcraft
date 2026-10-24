@@ -1,0 +1,20 @@
+[package]
+name = "launchcraft-sync"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+launchcraft-core = { path = "../launchcraft-core" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+reqwest.workspace = true
+blake3.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+zstd.workspace = true
+rayon.workspace = true
+futures-util.workspace = true
+tempfile.workspace = true
