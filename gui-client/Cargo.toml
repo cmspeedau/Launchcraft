@@ -1,16 +1,19 @@
 [package]
 name = "launchcraft-gui"
-version = "0.1.0"
-edition = "2021"
-description = "Modern client-side GUI for Launchcraft"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Client-side egui GUI for Launchcraft"
 
 [dependencies]
 eframe = "0.27"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-fs_extra = "1"
-chrono = "0.4"
+launchcraft-core = { path = "../crates/launchcraft-core" }
+launchcraft-backup = { path = "../crates/launchcraft-backup" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 
-[profile.release]
-opt-level = 3
-lto = true
+[dev-dependencies]
+tempfile = { workspace = true }
+zip = { workspace = true }

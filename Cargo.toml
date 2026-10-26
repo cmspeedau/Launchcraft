@@ -2,6 +2,7 @@
 members = [
     "crates/*",
     "apps/*",
+    "gui-client",
 ]
 resolver = "2"
 

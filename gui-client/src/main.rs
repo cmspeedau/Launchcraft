@@ -1,12 +1,15 @@
 //! Launchcraft GUI client
-//! A modern client-side launcher GUI with world save backups and Java settings.
+//! A client-side launcher GUI with world save backups (local + server) and Java settings.
 
 mod java;
 mod saves;
 
 use eframe::egui;
+use launchcraft_core::instance::BackupConfig;
+use launchcraft_core::paths::LauncherPaths;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::sync::mpsc::{Receiver, Sender};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JavaSettings {
@@ -38,7 +41,7 @@ impl JavaSettings {
     }
 
     pub fn save(&self, path: &std::path::Path) -> std::io::Result<()> {
-        Ok(std::fs::write(path, serde_json::to_vec_pretty(self)?)?)
+        std::fs::write(path, serde_json::to_vec_pretty(self)?)
     }
 
     pub fn load(path: &std::path::Path) -> Self {
@@ -50,57 +53,113 @@ impl JavaSettings {
 }
 
 pub struct App {
-    pub settings_dir: PathBuf,
+    pub paths: LauncherPaths,
     pub java: JavaSettings,
     pub status: String,
+    pub log: Vec<String>,
     pub tab: Tab,
+    pub instances: Vec<saves::InstanceEntry>,
+    pub instance: Option<usize>,
+    pub busy: bool,
+    runtime: tokio::runtime::Runtime,
+    ctx: egui::Context,
+    events_tx: Sender<saves::JobEvent>,
+    events_rx: Receiver<saves::JobEvent>,
 }
 
 #[derive(PartialEq)]
-pub enum Tab { Home, Worlds, Java, Logs }
+pub enum Tab {
+    Home,
+    Worlds,
+    Java,
+    Logs,
+}
 
 impl App {
-    fn settings_file(&self) -> PathBuf {
-        self.settings_dir.join("settings.json")
-    }
-}
-
-impl Default for App {
-    fn default() -> Self {
-        let dir = dirs();
-        let app = Self {
-            settings_dir: dir.clone(),
-            java: JavaSettings::load(&dir.join("settings.json")),
+    pub fn new(paths: LauncherPaths, ctx: egui::Context) -> Self {
+        let (events_tx, events_rx) = std::sync::mpsc::channel();
+        let runtime = tokio::runtime::Runtime::new().expect("failed to start async runtime");
+        let instances = saves::list_instances(&paths.instances);
+        Self {
+            java: JavaSettings::load(&paths.config.join("settings.json")),
             status: "Ready".into(),
+            log: Vec::new(),
             tab: Tab::Home,
-        };
-        app
+            instance: instances.first().map(|_| 0),
+            busy: false,
+            paths,
+            instances,
+            runtime,
+            ctx,
+            events_tx,
+            events_rx,
+        }
     }
-}
 
-fn dirs() -> PathBuf {
-    std::env::var("LAUNCHCRAFT_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            dirs_default().join(".launchcraft")
-        })
-}
+    fn settings_file(&self) -> PathBuf {
+        self.paths.config.join("settings.json")
+    }
 
-fn dirs_default() -> PathBuf {
-    #[cfg(target_os = "windows")]
-    { std::env::var("APPDATA").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from(".")) }
-    #[cfg(not(target_os = "windows"))]
-    { std::env::var("HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from(".")) }
+    fn selected_instance(&self) -> Option<&saves::InstanceEntry> {
+        self.instance.and_then(|i| self.instances.get(i))
+    }
+
+    fn push_log(&mut self, line: impl Into<String>) {
+        let line = line.into();
+        if self.log.len() >= 200 {
+            self.log.remove(0);
+        }
+        self.log.push(line);
+    }
+
+    fn set_status(&mut self, line: impl Into<String>) {
+        let line: String = line.into();
+        self.status = line.clone();
+        self.push_log(line);
+    }
+
+    /// Move finished/progressing background job lines into the status bar and log.
+    fn drain_events(&mut self) {
+        while let Ok(event) = self.events_rx.try_recv() {
+            self.status = event.line.clone();
+            self.push_log(event.line);
+            if event.done {
+                self.busy = false;
+            }
+        }
+    }
+
+    fn start_backup(&mut self, dir: PathBuf, config: BackupConfig, worlds: Vec<String>) {
+        saves::spawn_backup_job(
+            &self.runtime,
+            self.ctx.clone(),
+            self.events_tx.clone(),
+            dir,
+            config,
+            worlds,
+        );
+        self.busy = true;
+        self.set_status("Backing up worlds…");
+    }
+
+    fn start_upload(&mut self, dir: PathBuf, config: BackupConfig, archives: Vec<String>) {
+        saves::spawn_upload_job(
+            &self.runtime,
+            self.ctx.clone(),
+            self.events_tx.clone(),
+            dir,
+            config,
+            archives,
+        );
+        self.busy = true;
+        self.set_status("Uploading backups…");
+    }
 }
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.draw(ctx);
-    }
-}
+        self.drain_events();
 
-impl App {
-    fn draw(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("nav").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("🚀 Launchcraft");
@@ -112,7 +171,13 @@ impl App {
             });
         });
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
-            ui.horizontal(|ui| { ui.label("Status:"); ui.label(&self.status); });
+            ui.horizontal(|ui| {
+                ui.label("Status:");
+                ui.strong(&self.status);
+                if self.busy {
+                    ui.spinner();
+                }
+            });
         });
         egui::CentralPanel::default().show(ctx, |ui| match self.tab {
             Tab::Home => self.draw_home(ui),
@@ -121,45 +186,149 @@ impl App {
             Tab::Logs => self.draw_logs(ui),
         });
     }
+}
 
+impl App {
     fn draw_home(&mut self, ui: &mut egui::Ui) {
         ui.add_space(20.0);
         ui.heading("Welcome to Launchcraft");
         ui.label("A modern Minecraft launcher.");
+        ui.label(format!("Data directory: {}", self.paths.root.display()));
         ui.add_space(20.0);
-        if ui.add(egui::Button::new("▶  PLAY").min_size(egui::vec2(160.0, 44.0))).clicked() {
-            self.status = "Launching game...".into();
-            // TODO: wire into launcher backend to start the game process
+        if ui
+            .add(egui::Button::new("▶  PLAY").min_size(egui::vec2(160.0, 44.0)))
+            .clicked()
+        {
+            self.set_status("Launching game… (launcher backend not wired up yet)");
+            // TODO: wire into launchcraft-runtime to start the game process
         }
     }
 
     fn draw_worlds(&mut self, ui: &mut egui::Ui) {
         ui.heading("World Save Backups");
         ui.separator();
-        ui.horizontal(|ui| {
-            if ui.button("Backup all worlds").clicked() {
-                match saves::backup_all(&self.settings_dir) {
-                    Ok(n) => self.status = format!("Backed up {n} world(s)"),
-                    Err(e) => self.status = format!("Backup failed: {e}"),
+
+        if self.instances.is_empty() {
+            ui.label(format!(
+                "No instances found under {}.",
+                self.paths.instances.display()
+            ));
+            ui.label("Install a modpack instance to enable world backups.");
+            return;
+        }
+
+        let current = self
+            .selected_instance()
+            .map(|i| i.display_name().to_string())
+            .unwrap_or_else(|| "Select an instance…".into());
+        egui::ComboBox::from_id_source("instance_picker")
+            .selected_text(current)
+            .show_ui(ui, |ui| {
+                for (i, entry) in self.instances.iter().enumerate() {
+                    ui.selectable_value(&mut self.instance, Some(i), entry.display_name().to_string());
                 }
+            });
+        if ui.button("Rescan instances").clicked() {
+            self.instances = saves::list_instances(&self.paths.instances);
+            self.instance = self.instances.first().map(|_| 0);
+        }
+
+        let Some(entry) = self.selected_instance() else {
+            ui.label("Select an instance above.");
+            return;
+        };
+        let dir = entry.dir.clone();
+        let config = entry.config.backup_config.clone();
+        let cloud = entry.cloud_upload_possible();
+
+        let policy = if !config.server_backups_enabled {
+            "Cloud uploads: disabled by server policy".to_string()
+        } else {
+            match config.endpoint_url.as_deref() {
+                Some(endpoint) => format!("Cloud uploads: enabled → {endpoint}"),
+                None => "Cloud uploads: enabled, but no endpoint URL configured".to_string(),
             }
+        };
+        ui.label(policy);
+
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            ui.add_enabled_ui(!self.busy, |ui| {
+                if ui.button("Backup all worlds").clicked() {
+                    self.start_backup(dir.clone(), config.clone(), Vec::new());
+                }
+            });
             if ui.button("Open backups folder").clicked() {
-                let _ = std::fs::create_dir_all(saves::backup_dir(&self.settings_dir));
-                #[cfg(target_os = "windows")]
-                let _ = std::process::Command::new("explorer")
-                    .arg(saves::backup_dir(&self.settings_dir)).spawn();
-                #[cfg(not(target_os = "windows"))]
-                let _ = std::process::Command::new("xdg-open")
-                    .arg(saves::backup_dir(&self.settings_dir)).spawn();
+                let backups = saves::backups_dir(&dir);
+                let _ = std::fs::create_dir_all(&backups);
+                open_in_file_manager(&backups);
             }
         });
-        ui.add_space(10.0);
-        ui.label("Existing backups:");
-        if let Ok(entries) = std::fs::read_dir(saves::backup_dir(&self.settings_dir)) {
-            for e in entries.flatten() {
-                ui.label(format!("📦 {}", e.file_name().to_string_lossy()));
-            }
+
+        ui.add_space(8.0);
+        ui.strong("Worlds");
+        let worlds = saves::worlds(&dir);
+        if worlds.is_empty() {
+            ui.weak("No world saves found for this instance.");
         }
+        egui::ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
+            for world in &worlds {
+                ui.horizontal(|ui| {
+                    let lock = if world.is_locked { "  🔒" } else { "" };
+                    ui.label(format!(
+                        "🌍 {}{lock}  ({})",
+                        world.display_name,
+                        saves::human_size(world.size_bytes)
+                    ));
+                    let label = if cloud { "Backup + Upload" } else { "Backup" };
+                    ui.add_enabled_ui(!self.busy && !world.is_locked, |ui| {
+                        if ui.button(label).clicked() {
+                            self.start_backup(
+                                dir.clone(),
+                                config.clone(),
+                                vec![world.folder_name.clone()],
+                            );
+                        }
+                    });
+                });
+            }
+        });
+
+        ui.add_space(8.0);
+        ui.strong("Existing backups");
+        let backups = saves::local_backups(&dir);
+        if backups.is_empty() {
+            ui.weak("No local backup archives yet.");
+        }
+        egui::ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
+            for backup in &backups {
+                ui.horizontal(|ui| {
+                    ui.label(format!(
+                        "📦 {}  ({})",
+                        backup.file_name,
+                        saves::human_size(backup.size_bytes)
+                    ));
+                    ui.add_enabled_ui(!self.busy && cloud, |ui| {
+                        if ui.button("Upload").clicked() {
+                            self.start_upload(
+                                dir.clone(),
+                                config.clone(),
+                                vec![backup.file_name.clone()],
+                            );
+                        }
+                    });
+                    if ui
+                        .add_enabled(!self.busy, egui::Button::new("Restore"))
+                        .clicked()
+                    {
+                        match saves::restore(&dir, &backup.file_name) {
+                            Ok(path) => self.set_status(format!("Restored {}", path.display())),
+                            Err(e) => self.set_status(format!("Restore failed: {e}")),
+                        }
+                    }
+                });
+            }
+        });
     }
 
     fn draw_java(&mut self, ui: &mut egui::Ui) {
@@ -171,11 +340,11 @@ impl App {
             ui.end_row();
 
             ui.label("Min memory (MB):");
-            ui.add(egui::DragValue::new(&mut self.java.min_memory_mb).range(256..=16384));
+            ui.add(egui::DragValue::new(&mut self.java.min_memory_mb).clamp_range(256..=16384));
             ui.end_row();
 
             ui.label("Max memory (MB):");
-            ui.add(egui::DragValue::new(&mut self.java.max_memory_mb).range(512..=32768));
+            ui.add(egui::DragValue::new(&mut self.java.max_memory_mb).clamp_range(512..=32768));
             ui.end_row();
 
             ui.label("Extra JVM args:");
@@ -184,31 +353,65 @@ impl App {
         });
         ui.add_space(8.0);
         ui.label(format!("Effective args: {}", self.java.to_jvm_args().join(" ")));
+        ui.label(format!("Saved to: {}", self.settings_file().display()));
         ui.horizontal(|ui| {
             if ui.button("Save").clicked() {
                 match self.java.save(&self.settings_file()) {
-                    Ok(()) => self.status = "Java settings saved".into(),
-                    Err(e) => self.status = format!("Save failed: {e}"),
+                    Ok(()) => self.set_status("Java settings saved"),
+                    Err(e) => self.set_status(format!("Save failed: {e}")),
                 }
             }
             if ui.button("Detect Java").clicked() {
-                self.java.java_path = java::detect_java().unwrap_or_else(|| "java".into());
+                match java::detect_java() {
+                    Some(path) => {
+                        self.java.java_path = path;
+                        match java::version(&self.java.java_path) {
+                            Some(v) => self.set_status(format!("Detected {v}")),
+                            None => self.set_status("Java path set, but the version query failed"),
+                        }
+                    }
+                    None => self.set_status("No Java runtime found — set the path manually"),
+                }
             }
         });
     }
 
     fn draw_logs(&mut self, ui: &mut egui::Ui) {
         ui.heading("Logs");
-        ui.label(&self.status);
+        ui.separator();
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .stick_to_bottom(true)
+            .show(ui, |ui| {
+                if self.log.is_empty() {
+                    ui.weak("Nothing logged yet.");
+                }
+                for line in &self.log {
+                    ui.monospace(line);
+                }
+            });
     }
 }
 
-fn main() -> eframe::Result {
-    let app = App::default();
-    std::fs::create_dir_all(&app.settings_dir).ok();
+fn open_in_file_manager(path: &std::path::Path) {
+    #[cfg(target_os = "windows")]
+    let opener = "explorer";
+    #[cfg(target_os = "macos")]
+    let opener = "open";
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let opener = "xdg-open";
+    let _ = std::process::Command::new(opener).arg(path).spawn();
+}
+
+fn main() -> eframe::Result<()> {
+    let paths = LauncherPaths::resolve().expect("could not resolve launcher data directories");
+    paths.ensure_dirs().ok();
     eframe::run_native(
         "Launchcraft",
-        eframe::egui::vec2(960.0, 640.0),
-        Box::new(move |_cc| Ok(Box::new(app))),
+        eframe::NativeOptions {
+            viewport: egui::ViewportBuilder::default().with_inner_size([960.0, 640.0]),
+            ..Default::default()
+        },
+        Box::new(move |cc| Box::new(App::new(paths, cc.egui_ctx.clone()))),
     )
 }
