@@ -18,6 +18,9 @@ WORKDIR /usr/src/launchcraft
 COPY Cargo.toml Cargo.lock* ./
 COPY crates ./crates
 COPY apps ./apps
+# gui-client is a workspace member; cargo must see its manifest even though
+# this image only builds the headless launchcraft-builder.
+COPY gui-client ./gui-client
 
 RUN cargo build --release -p launchcraft-builder --verbose
 
