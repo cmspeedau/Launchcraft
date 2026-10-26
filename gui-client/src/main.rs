@@ -271,7 +271,7 @@ impl App {
         if worlds.is_empty() {
             ui.weak("No world saves found for this instance.");
         }
-        egui::ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
+        egui::ScrollArea::vertical().id_source("worlds_scroll").max_height(200.0).show(ui, |ui| {
             for world in &worlds {
                 ui.horizontal(|ui| {
                     let lock = if world.is_locked { "  🔒" } else { "" };
@@ -300,7 +300,7 @@ impl App {
         if backups.is_empty() {
             ui.weak("No local backup archives yet.");
         }
-        egui::ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
+        egui::ScrollArea::vertical().id_source("backups_scroll").max_height(180.0).show(ui, |ui| {
             for backup in &backups {
                 ui.horizontal(|ui| {
                     ui.label(format!(
@@ -380,6 +380,7 @@ impl App {
         ui.heading("Logs");
         ui.separator();
         egui::ScrollArea::vertical()
+            .id_source("logs_scroll")
             .auto_shrink([false, false])
             .stick_to_bottom(true)
             .show(ui, |ui| {
