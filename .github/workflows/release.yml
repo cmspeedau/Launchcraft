@@ -72,10 +72,12 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Build release binary
-        run: cargo build --release -p launchcraft-desktop
+      - name: Build release binaries
+        run: |
+          cargo build --release -p launchcraft-desktop
+          cargo build --release -p launchcraft-gui
 
-      - name: Package portable ZIP
+      - name: Package portable ZIPs
         shell: pwsh
         env:
           VERSION: ${{ needs.version.outputs.version }}
@@ -84,6 +86,9 @@ jobs:
           Copy-Item target/release/launchcraft-desktop.exe dist/Launchcraft.exe
           Compress-Archive -Path dist/Launchcraft.exe `
             -DestinationPath "dist/Launchcraft-$env:VERSION-windows-portable.zip"
+          Copy-Item target/release/launchcraft-gui.exe dist/LaunchcraftGUI.exe
+          Compress-Archive -Path dist/LaunchcraftGUI.exe `
+            -DestinationPath "dist/LaunchcraftGUI-$env:VERSION-windows-portable.zip"
           Get-Item dist/*.zip | Select-Object Name, Length
 
       - name: Attach to release
@@ -96,7 +101,8 @@ jobs:
           # Retry: concurrent uploads can draw transient GitHub API errors.
           for i in 1 2 3 4 5; do
             gh --repo "$GITHUB_REPOSITORY" release upload "$TAG" \
-              "dist/Launchcraft-${VERSION}-windows-portable.zip" --clobber && break
+              "dist/Launchcraft-${VERSION}-windows-portable.zip" \
+              "dist/LaunchcraftGUI-${VERSION}-windows-portable.zip" --clobber && break
             [ "$i" = 5 ] && exit 1
             sleep $((i * 5))
           done
@@ -115,13 +121,17 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Build Apple Silicon binary
-        run: cargo build --release -p launchcraft-desktop
+      - name: Build Apple Silicon binaries
+        run: |
+          cargo build --release -p launchcraft-desktop
+          cargo build --release -p launchcraft-gui
 
-      - name: Build Intel binary
-        run: cargo build --release -p launchcraft-desktop --target x86_64-apple-darwin
+      - name: Build Intel binaries
+        run: |
+          cargo build --release -p launchcraft-desktop --target x86_64-apple-darwin
+          cargo build --release -p launchcraft-gui --target x86_64-apple-darwin
 
-      - name: Create universal binary and attach to release
+      - name: Create universal binaries and attach to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.version.outputs.version }}
@@ -135,9 +145,17 @@ jobs:
           lipo -info dist/Launchcraft
           chmod +x dist/Launchcraft
           zip -j "dist/Launchcraft-${VERSION}-macos-universal.zip" dist/Launchcraft
+          lipo -create \
+            target/release/launchcraft-gui \
+            target/x86_64-apple-darwin/release/launchcraft-gui \
+            -output dist/LaunchcraftGUI
+          lipo -info dist/LaunchcraftGUI
+          chmod +x dist/LaunchcraftGUI
+          zip -j "dist/LaunchcraftGUI-${VERSION}-macos-universal.zip" dist/LaunchcraftGUI
           for i in 1 2 3 4 5; do
             gh --repo "$GITHUB_REPOSITORY" release upload "$TAG" \
-              "dist/Launchcraft-${VERSION}-macos-universal.zip" --clobber && break
+              "dist/Launchcraft-${VERSION}-macos-universal.zip" \
+              "dist/LaunchcraftGUI-${VERSION}-macos-universal.zip" --clobber && break
             [ "$i" = 5 ] && exit 1
             sleep $((i * 5))
           done
@@ -199,6 +217,45 @@ jobs:
           for i in 1 2 3 4 5; do
             gh --repo "$GITHUB_REPOSITORY" release upload "$TAG" \
               Launchcraft-*.AppImage Launchcraft-*.AppImage.zsync --clobber && break
+            [ "$i" = 5 ] && exit 1
+            sleep $((i * 5))
+          done
+
+  linux-gui:
+    name: Linux GUI client
+    needs: [version, open-release]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libzstd-dev build-essential
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release -p launchcraft-gui
+
+      - name: Package tarball
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          mkdir -p dist
+          tar -C target/release -czf "dist/LaunchcraftGUI-${VERSION}-linux-x86_64.tar.gz" launchcraft-gui
+
+      - name: Attach to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          for i in 1 2 3 4 5; do
+            gh --repo "$GITHUB_REPOSITORY" release upload "$TAG" \
+              dist/LaunchcraftGUI-*-linux-x86_64.tar.gz --clobber && break
             [ "$i" = 5 ] && exit 1
             sleep $((i * 5))
           done
