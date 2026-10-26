@@ -72,6 +72,28 @@ pub fn restore(instance_dir: &Path, archive_name: &str) -> Result<PathBuf, Strin
     WorldArchiver::restore_backup(instance_dir, archive_name, None).map_err(|e| e.to_string())
 }
 
+/// Point the instance at a backup server by rewriting `backup_config.endpoint_url`
+/// in its `instance.json`. An empty string clears the endpoint.
+/// Returns the stored value (`None` when cleared).
+pub fn set_endpoint(instance_dir: &Path, endpoint: &str) -> Result<Option<String>, String> {
+    let trimmed = endpoint.trim();
+    let url = (!trimmed.is_empty()).then(|| trimmed.to_string());
+    if let Some(url) = &url {
+        if !(url.starts_with("http://") || url.starts_with("https://")) {
+            return Err("endpoint must start with http:// or https://".into());
+        }
+    }
+
+    let config_path = instance_dir.join("instance.json");
+    let text = fs::read_to_string(&config_path).map_err(|e| format!("could not read instance.json: {e}"))?;
+    let mut config: InstanceConfig =
+        serde_json::from_str(&text).map_err(|e| format!("could not parse instance.json: {e}"))?;
+    config.backup_config.endpoint_url = url.clone();
+    let json = serde_json::to_vec_pretty(&config).map_err(|e| e.to_string())?;
+    fs::write(&config_path, json).map_err(|e| format!("could not write instance.json: {e}"))?;
+    Ok(url)
+}
+
 /// Directory holding an instance's local backup archives.
 pub fn backups_dir(instance_dir: &Path) -> PathBuf {
     WorldInspector::get_backups_dir(instance_dir)
@@ -393,5 +415,31 @@ mod tests {
         );
         assert!(seen.lock().unwrap().is_empty(), "server must not be contacted");
         assert_eq!(local_backups(&dir).len(), 1, "local backup still created");
+    }
+
+    #[test]
+    fn set_endpoint_round_trips_instance_json() {
+        let tmp = tempdir().unwrap();
+        let dir = make_instance(tmp.path(), &instance_json(true, Some("http://old.example/api")));
+        let read_config = || -> InstanceConfig {
+            let text = fs::read_to_string(dir.join("instance.json")).unwrap();
+            serde_json::from_str(&text).unwrap()
+        };
+
+        // Set a new endpoint: value is trimmed, stored, and the policy flag is untouched.
+        let stored = set_endpoint(&dir, " https://new.example.com/api ").unwrap();
+        assert_eq!(stored.as_deref(), Some("https://new.example.com/api"));
+        let cfg = read_config();
+        assert_eq!(cfg.backup_config.endpoint_url.as_deref(), Some("https://new.example.com/api"));
+        assert!(cfg.backup_config.server_backups_enabled);
+        assert_eq!(cfg.name, "Test Pack");
+
+        // Clearing works.
+        assert_eq!(set_endpoint(&dir, "").unwrap(), None);
+        assert_eq!(read_config().backup_config.endpoint_url, None);
+
+        // Non-http endpoints are rejected and leave the file unchanged.
+        assert!(set_endpoint(&dir, "ftp://nope").is_err());
+        assert_eq!(read_config().backup_config.endpoint_url, None);
     }
 }

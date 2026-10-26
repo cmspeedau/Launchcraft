@@ -60,6 +60,8 @@ pub struct App {
     pub tab: Tab,
     pub instances: Vec<saves::InstanceEntry>,
     pub instance: Option<usize>,
+    pub endpoint_input: String,
+    endpoint_for: Option<usize>,
     pub busy: bool,
     runtime: tokio::runtime::Runtime,
     ctx: egui::Context,
@@ -86,6 +88,8 @@ impl App {
             log: Vec::new(),
             tab: Tab::Home,
             instance: instances.first().map(|_| 0),
+            endpoint_input: String::new(),
+            endpoint_for: None,
             busy: false,
             paths,
             instances,
@@ -231,12 +235,14 @@ impl App {
         if ui.button("Rescan instances").clicked() {
             self.instances = saves::list_instances(&self.paths.instances);
             self.instance = self.instances.first().map(|_| 0);
+            self.endpoint_for = None;
         }
 
-        let Some(entry) = self.selected_instance() else {
+        let Some(idx) = self.instance.filter(|i| self.instances.get(*i).is_some()) else {
             ui.label("Select an instance above.");
             return;
         };
+        let entry = &self.instances[idx];
         let dir = entry.dir.clone();
         let config = entry.config.backup_config.clone();
         let cloud = entry.cloud_upload_possible();
@@ -250,6 +256,35 @@ impl App {
             }
         };
         ui.label(policy);
+
+        // Where the backup server lives — stored per instance in its instance.json.
+        if self.endpoint_for != Some(idx) {
+            self.endpoint_input = config.endpoint_url.clone().unwrap_or_default();
+            self.endpoint_for = Some(idx);
+        }
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label("Backup server URL:");
+            ui.add_sized(
+                [320.0, ui.spacing().interact_size.y.max(20.0)],
+                egui::TextEdit::singleline(&mut self.endpoint_input)
+                    .hint_text("https://backups.example.com/api"),
+            );
+            if ui.button("Save server").clicked() {
+                match saves::set_endpoint(&dir, &self.endpoint_input) {
+                    Ok(url) => {
+                        if let Some(entry) = self.instances.get_mut(idx) {
+                            entry.config.backup_config.endpoint_url = url.clone();
+                        }
+                        match url {
+                            Some(u) => self.set_status(format!("Backup server set to {u}")),
+                            None => self.set_status("Backup server cleared"),
+                        }
+                    }
+                    Err(e) => self.set_status(format!("Could not save server URL: {e}")),
+                }
+            }
+        });
 
         ui.add_space(8.0);
         ui.horizontal(|ui| {
