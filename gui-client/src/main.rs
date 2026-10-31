@@ -61,12 +61,11 @@ pub struct App {
     pub tab: Tab,
     pub instances: Vec<saves::InstanceEntry>,
     pub instance: Option<usize>,
-    pub endpoint_input: String,
-    endpoint_for: Option<usize>,
     pub busy: bool,
     // Remote pack browser (SKCraft-style): list pulled from a launchcraft-server.
+    // One Server URL serves both packs (`/packs`) and backups (`/api`).
     pub client_settings: packs::ClientSettings,
-    pub pack_url_input: String,
+    pub server_url_input: String,
     pub packs: Vec<packs::PackInfo>,
     pub packs_loading: bool,
     pub packs_error: Option<String>,
@@ -100,18 +99,16 @@ impl App {
         let runtime = tokio::runtime::Runtime::new().expect("failed to start async runtime");
         let instances = saves::list_instances(&paths.instances);
         let client_settings = packs::ClientSettings::load(&paths.config);
-        let pack_url_input = client_settings.pack_server_url.clone().unwrap_or_default();
+        let server_url_input = client_settings.server_url.clone().unwrap_or_default();
         let mut app = Self {
             java: JavaSettings::load(&paths.config.join("settings.json")),
             status: "Ready".into(),
             log: Vec::new(),
             tab: Tab::Home,
             instance: instances.first().map(|_| 0),
-            endpoint_input: String::new(),
-            endpoint_for: None,
             busy: false,
             client_settings,
-            pack_url_input,
+            server_url_input,
             packs: Vec::new(),
             packs_loading: false,
             packs_error: None,
@@ -130,7 +127,7 @@ impl App {
             events_rx,
         };
         // SKCraft behavior: pull the pack list automatically on start-up.
-        if let Some(url) = app.client_settings.pack_server_url.clone() {
+        if let Some(url) = app.client_settings.server_url.clone() {
             app.refresh_packs(&url);
         }
         app
@@ -148,14 +145,41 @@ impl App {
         );
     }
 
-    fn save_pack_server_url(&mut self, url: String) {
-        self.client_settings.pack_server_url = if url.trim().is_empty() {
+    /// Persist the shared server URL and point every instance's backup
+    /// endpoint at it (`<url>/api`) — packs and backups on one server.
+    fn save_server_url(&mut self, url: String) {
+        self.client_settings.server_url = if url.trim().is_empty() {
             None
         } else {
             Some(url.clone())
         };
         if let Err(e) = self.client_settings.save(&self.paths.config) {
             self.set_status(format!("Could not save server URL: {e}"));
+        }
+        let Some(endpoint) = packs::backup_endpoint(&url) else {
+            return;
+        };
+        let mut updated = 0usize;
+        let mut failures = Vec::new();
+        for entry in &mut self.instances {
+            if entry.config.backup_config.endpoint_url.as_deref() == Some(endpoint.as_str()) {
+                continue;
+            }
+            match saves::set_endpoint(&entry.dir, &endpoint) {
+                Ok(u) => {
+                    entry.config.backup_config.endpoint_url = u;
+                    updated += 1;
+                }
+                Err(e) => failures.push(e),
+            }
+        }
+        for e in failures {
+            self.set_status(format!("Backup endpoint update failed: {e}"));
+        }
+        if updated > 0 {
+            self.set_status(format!(
+                "Backup server → {endpoint} ({updated} instance(s) updated)."
+            ));
         }
     }
 
@@ -288,13 +312,13 @@ impl App {
             .show_inside(ui, |ui| {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
-                    ui.label("Pack server:");
-                    ui.text_edit_singleline(&mut self.pack_url_input);
+                    ui.label("Server URL:");
+                    ui.text_edit_singleline(&mut self.server_url_input);
                 });
                 ui.horizontal(|ui| {
                     if ui.button("Check for updates").clicked() {
-                        let url = self.pack_url_input.clone();
-                        self.save_pack_server_url(url.clone());
+                        let url = self.server_url_input.clone();
+                        self.save_server_url(url.clone());
                         if !url.trim().is_empty() {
                             fetch = Some(url);
                         }
@@ -309,7 +333,7 @@ impl App {
                 }
                 if self.packs.is_empty() && !self.packs_loading && self.packs_error.is_none() {
                     ui.weak(
-                        "No packs yet.\n\nSet the Pack server URL of a\nlaunchcraft-server above, then\nCheck for updates.",
+                        "No packs yet.\n\nSet the Server URL of a\nlaunchcraft-server above, then\nCheck for updates.",
                     );
                 }
                 egui::ScrollArea::vertical().show(ui, |ui| {
@@ -357,8 +381,8 @@ impl App {
                             .add(egui::Button::new(button).min_size(egui::vec2(160.0, 36.0)))
                             .clicked()
                         {
-                            let url = self.pack_url_input.clone();
-                            self.save_pack_server_url(url.clone());
+                            let url = self.server_url_input.clone();
+                            self.save_server_url(url.clone());
                             packs::spawn_install(
                                 &self.runtime,
                                 self.ctx.clone(),
@@ -447,7 +471,6 @@ impl App {
         if ui.button("Rescan instances").clicked() {
             self.instances = saves::list_instances(&self.paths.instances);
             self.instance = self.instances.first().map(|_| 0);
-            self.endpoint_for = None;
         }
 
         let Some(idx) = self.instance.filter(|i| self.instances.get(*i).is_some()) else {
@@ -456,47 +479,31 @@ impl App {
         };
         let entry = &self.instances[idx];
         let dir = entry.dir.clone();
-        let config = entry.config.backup_config.clone();
-        let cloud = entry.cloud_upload_possible();
+        let mut config = entry.config.backup_config.clone();
+
+        // One shared server: packs install already store `<Server URL>/api` as
+        // the endpoint, and saving the URL re-points every instance. Older
+        // instances fall back to the shared URL here so one URL drives both.
+        if config.endpoint_url.is_none() {
+            config.endpoint_url =
+                packs::backup_endpoint(self.client_settings.server_url.as_deref().unwrap_or(""));
+        }
+        let cloud = config.server_backups_enabled && config.endpoint_url.is_some();
 
         let policy = if !config.server_backups_enabled {
             "Cloud uploads: disabled by server policy".to_string()
         } else {
             match config.endpoint_url.as_deref() {
                 Some(endpoint) => format!("Cloud uploads: enabled → {endpoint}"),
-                None => "Cloud uploads: enabled, but no endpoint URL configured".to_string(),
+                None => "Cloud uploads: enabled — set the Server URL on the Home tab to pick a backup server".to_string(),
             }
         };
         ui.label(policy);
-
-        // Where the backup server lives — stored per instance in its instance.json.
-        if self.endpoint_for != Some(idx) {
-            self.endpoint_input = config.endpoint_url.clone().unwrap_or_default();
-            self.endpoint_for = Some(idx);
-        }
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            ui.label("Backup server URL:");
-            ui.add_sized(
-                [320.0, ui.spacing().interact_size.y.max(20.0)],
-                egui::TextEdit::singleline(&mut self.endpoint_input)
-                    .hint_text("https://backups.example.com/api"),
+        if config.endpoint_url.is_some() {
+            ui.weak(
+                "Backups use the Home tab's Server URL (…/api).\nChange it there and every instance follows.",
             );
-            if ui.button("Save server").clicked() {
-                match saves::set_endpoint(&dir, &self.endpoint_input) {
-                    Ok(url) => {
-                        if let Some(entry) = self.instances.get_mut(idx) {
-                            entry.config.backup_config.endpoint_url = url.clone();
-                        }
-                        match url {
-                            Some(u) => self.set_status(format!("Backup server set to {u}")),
-                            None => self.set_status("Backup server cleared"),
-                        }
-                    }
-                    Err(e) => self.set_status(format!("Could not save server URL: {e}")),
-                }
-            }
-        });
+        }
 
         ui.add_space(8.0);
         ui.horizontal(|ui| {

@@ -88,10 +88,24 @@ pub fn local_pack_version(instances_dir: &Path, pack_id: &str) -> Option<String>
 
 /// Client-side settings kept apart from the Java settings file so neither
 /// save path clobbers the other. (`<config>/client.json`)
+///
+/// One URL for the whole launchcraft-server: packs are pulled from
+/// `<url>/packs`, world backups are pushed to `<url>/api` — SKCraft treats
+/// the pack site and the backup site as one server, so we do too.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct ClientSettings {
-    #[serde(default)]
-    pub pack_server_url: Option<String>,
+    #[serde(default, alias = "pack_server_url")]
+    pub server_url: Option<String>,
+}
+
+/// Backup endpoint derived from the shared server URL: `…/api`, the exact
+/// base `launchcraft-backup::BackupSyncClient` expects.
+pub fn backup_endpoint(url: &str) -> Option<String> {
+    let base = {
+        let t = url.trim();
+        (!t.is_empty()).then(|| base_url(t))
+    };
+    base.map(|b| format!("{b}/api"))
 }
 
 impl ClientSettings {
@@ -181,7 +195,13 @@ pub fn spawn_fetch(
 }
 
 /// Create (or refresh) the local `instance.json` for a remote pack install.
-pub fn prepare_instance(instance_dir: &Path, pack: &PackInfo) -> Result<InstanceConfig, String> {
+/// The shared server URL also becomes the instance's backup endpoint
+/// (`<url>/api`), keeping packs and backups on one server.
+pub fn prepare_instance(
+    instance_dir: &Path,
+    pack: &PackInfo,
+    server_url: &str,
+) -> Result<InstanceConfig, String> {
     safe_pack_id(&pack.id)?;
     let game_dir = instance_dir.join("minecraft");
     std::fs::create_dir_all(&game_dir).map_err(|e| e.to_string())?;
@@ -212,6 +232,9 @@ pub fn prepare_instance(instance_dir: &Path, pack: &PackInfo) -> Result<Instance
         etag: None,
         locked: false,
     };
+    if let Some(endpoint) = backup_endpoint(server_url) {
+        config.backup_config.endpoint_url = Some(endpoint);
+    }
     std::fs::write(
         &config_path,
         serde_json::to_vec_pretty(&config).map_err(|e| e.to_string())?,
@@ -285,7 +308,7 @@ async fn do_install(
     ctx: &egui::Context,
 ) -> Result<String, String> {
     let instance_dir = paths.instances.join(&pack.id);
-    prepare_instance(&instance_dir, pack)?;
+    prepare_instance(&instance_dir, pack, server_url)?;
     let repo_url = install_repo_url(server_url, &pack.id);
 
     report_progress(
@@ -368,14 +391,60 @@ mod tests {
     fn settings_roundtrip_keeps_java_file_untouched() {
         let tmp = tempfile::tempdir().unwrap();
         let s = ClientSettings {
-            pack_server_url: Some("http://localhost:9090".into()),
+            server_url: Some("http://localhost:9090".into()),
         };
         s.save(tmp.path()).unwrap();
         assert_eq!(
-            ClientSettings::load(tmp.path()).pack_server_url.as_deref(),
+            ClientSettings::load(tmp.path()).server_url.as_deref(),
             Some("http://localhost:9090")
         );
         assert!(!tmp.path().join("settings.json").exists());
+    }
+
+    #[test]
+    fn server_url_reads_old_pack_server_url_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("client.json"),
+            r#"{"pack_server_url":"http://old:9090/"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            ClientSettings::load(tmp.path()).server_url.as_deref(),
+            Some("http://old:9090/")
+        );
+    }
+
+    #[test]
+    fn one_url_drives_packs_and_backups() {
+        assert_eq!(
+            backup_endpoint("http://mc.example.com/").as_deref(),
+            Some("http://mc.example.com/api")
+        );
+        assert_eq!(backup_endpoint("  "), None);
+        assert_eq!(
+            install_repo_url("http://h:9090/", "p1"),
+            "http://h:9090/packs/p1"
+        );
+
+        // A fresh install records the shared URL as the backup endpoint.
+        let tmp = tempfile::tempdir().unwrap();
+        let pack = PackInfo {
+            id: "served".into(),
+            title: "Served".into(),
+            game_version: "1.21".into(),
+            pack_version: "1".into(),
+            loader: None,
+            file_count: 0,
+            total_bytes: 0,
+        };
+        prepare_instance(&tmp.path().join("served"), &pack, "http://h:9090").unwrap();
+        let text = std::fs::read_to_string(tmp.path().join("served/instance.json")).unwrap();
+        let config: InstanceConfig = serde_json::from_str(&text).unwrap();
+        assert_eq!(
+            config.backup_config.endpoint_url.as_deref(),
+            Some("http://h:9090/api")
+        );
     }
 
     fn write_instance(dir: &Path, id: &str, pack_id: &str, version: &str) {
@@ -428,7 +497,7 @@ mod tests {
             file_count: 0,
             total_bytes: 0,
         };
-        assert!(prepare_instance(&tmp.path().join("x"), &pack).is_err());
+        assert!(prepare_instance(&tmp.path().join("x"), &pack, "http://x").is_err());
     }
 
     #[test]

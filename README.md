@@ -163,9 +163,11 @@ docker compose up -d backup-server
 | `LAUNCHCRAFT_MAX_UPLOAD_MB` | `256` | Per-upload size cap |
 | `LAUNCHCRAFT_REPO_DIST` | *(unset)* | Built `./dist` dir auto-registered into the Pack Manager on first boot |
 
-Point an instance's **Backup server URL** at `http://localhost:9090/api`
-(the client contract is `POST /api/backups/upload?filename=…` /
-`GET /api/backups/download?filename=…`), and open
+The launcher needs **one** URL for both jobs: enter `http://localhost:9090`
+as the **Server URL** (Home tab) and world backups go to
+`http://localhost:9090/api` automatically (the client contract is
+`POST /api/backups/upload?filename=…` /
+`GET /api/backups/download?filename=…`). Open
 `http://localhost:9090` for the console. Flipping the console's policy
 toggle makes the API answer `403` to uploads, which clients surface as
 "disabled by server policy".
@@ -181,11 +183,12 @@ static nginx repo-server (the admin token never gates these routes):
 | `GET /packs/<id>/manifest.json` | `SyncEngine` manifest fetch |
 | `GET /packs/<id>/cas/objects/<shard>/<hash>` | CAS blobs |
 
-Point the launcher's **Pack server** (Home tab) at `http://localhost:9090`:
-the pack list is pulled automatically on start-up, shows each pack's
-install state (not installed / installed / requires update), and
-**Install** syncs the pack into `<instances>/<id>/` through
-`launchcraft-sync` in the background, with a live progress bar.
+Enter that same **Server URL** in the launcher (Home tab): the pack list is
+pulled automatically on start-up, shows each pack's install state (not
+installed / installed / requires update), and **Install** syncs the pack into
+`<instances>/<id>/` through `launchcraft-sync` in the background, with a live
+progress bar. Saving the URL also re-points every instance's backup endpoint
+at `<url>/api`, so packs and backups always share one server.
 
 The **Java Settings** tab lists every Java runtime it finds on the machine
 (JAVA_HOME, `/usr/lib/jvm`, SDKMAN, macOS/Windows install trees) with its

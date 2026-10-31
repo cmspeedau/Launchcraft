@@ -218,11 +218,15 @@ Phase 1: Workspace & Core Foundation (Done)
     admin stays intact). Strict hex-hash validation; no path traversal.
 - [x] **Launcher Pack Browser (`gui-client`):**
   - SKCraft-style Home tab: pulls `GET /packs` automatically on start-up from the
-    configured pack server, shows per-pack state (not installed / installed /
+    configured server, shows per-pack state (not installed / installed /
     requires update) and installs or updates instances in the background via the
     real `SyncEngine`, recording a `RemoteSync` source in `instance.json`.
   - Live progress bar during install/update/reinstall, driven by the `SyncEngine`
     byte/file progress callbacks.
+  - One **Server URL** (Home tab) drives packs and backups: installs store
+    `<url>/api` as the instance backup endpoint and saving the URL re-points every
+    instance; the Worlds tab shows the shared endpoint instead of editing one per instance.
+    (Old `client.json` `pack_server_url` keys load unchanged via a serde alias.)
   - Java settings list every runtime found on the machine (JAVA_HOME, `/usr/lib/jvm`,
     SDKMAN, macOS/Windows trees) by parsed version — pick one or keep a custom path.
 - [x] **End-to-End Tests:**

@@ -26,12 +26,6 @@ impl InstanceEntry {
     pub fn display_name(&self) -> &str {
         &self.config.name
     }
-
-    /// Whether cloud uploads are actually possible: server policy enabled *and* an endpoint set.
-    pub fn cloud_upload_possible(&self) -> bool {
-        self.config.backup_config.server_backups_enabled
-            && self.config.backup_config.endpoint_url.is_some()
-    }
 }
 
 /// Scan the launcher's `instances/` directory for instances with a readable `instance.json`.
