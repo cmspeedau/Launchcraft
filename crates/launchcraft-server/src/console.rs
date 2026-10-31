@@ -97,7 +97,7 @@ pub async fn packs_list(
                 "src": p.src.as_ref().map(|s| s.display().to_string()),
                 "dist": p.dist.display().to_string(),
                 "created_at": p.created_at,
-                "curseforge": p.curseforge,
+                "source": p.source,
             });
             let status = dist_status(&p.dist);
             if let Some(map) = row.as_object_mut() {
@@ -175,7 +175,7 @@ pub async fn packs_new(
         src: Some(src.clone()),
         dist: dist.clone(),
         created_at: chrono::Utc::now().to_rfc3339(),
-        curseforge: None,
+        source: None,
     })?;
     registry.save(&state.data_dir)?;
     tracing::info!("created new pack '{}' at {}", body.id, src.display());
@@ -233,7 +233,7 @@ pub async fn packs_add(
         src,
         dist,
         created_at: chrono::Utc::now().to_rfc3339(),
-        curseforge: None,
+        source: None,
     })?;
     registry.save(&state.data_dir)?;
     tracing::info!("registered pack '{}'", body.id);

@@ -277,6 +277,8 @@ fn default_cfg() -> ServerConfig {
         max_upload_mb: 8,
         curseforge_key: None,
         curseforge_url: "https://api.curseforge.com/v1".into(),
+        modrinth_url: "https://api.modrinth.com/v2".into(),
+        ftb_url: "https://dist.creeper.host/FTB2".into(),
     }
 }
 

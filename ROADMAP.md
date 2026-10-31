@@ -229,20 +229,23 @@ Phase 1: Workspace & Core Foundation (Done)
     (Old `client.json` `pack_server_url` keys load unchanged via a serde alias.)
   - Java settings list every runtime found on the machine (JAVA_HOME, `/usr/lib/jvm`,
     SDKMAN, macOS/Windows trees) by parsed version — pick one or keep a custom path.
-- [x] **CurseForge Importer (console, server-side):**
-  - Proxied browsing of CurseForge modpacks (`GET /console/curseforge/search|files`):
-    search box, game-version filter, sort dropdown, version selector — the API key
-    (`LAUNCHCRAFT_CURSEFORGE_KEY`) stays server-side; CORS never enters the picture.
-  - One-click **Add**: downloads the modpack zip, reads `manifest.json` (Forge) or
-    `modrinth.index.json` (Fabric), fetches every referenced mod file (bounded
-    concurrency) plus zip-slip-safe `overrides/` into a Pack Manager workspace,
-    registers and builds it. Missing required mods abort; optional mods warn.
-    Tests run against an in-process mock of the Core API.
-  - **Updates** for imported packs (Prism-style): the registry stores the CurseForge
-    project + file id, so a pack row gets a "CF Update" action — re-download the
-    chosen (default newest) file, re-fetch mods, prune mods the new version dropped,
-    re-merge overrides, bump `pack.json`'s version and rebuild. Same-file requests
-    report `{updated: false}`; hand-built packs are refused with 400.
+- [x] **Modpack Browser (console, server-side — CurseForge · Modrinth · FTB):**
+  - One unified endpoint set (`GET /console/modpacks|search|versions`,
+    `POST /console/modpacks/add|update/:id`) behind one console browser; the CurseForge
+    key (`LAUNCHCRAFT_CURSEFORGE_KEY`) stays server-side and Modrinth/FTB need no key —
+    CORS never enters the picture.
+  - One-click **Add** rebuilds any provider's archive into a Pack Manager workspace:
+    `manifest.json` (Forge) references resolved through the Core API, `modrinth.index.json`
+    / `.mrpack` files fetched by their direct URLs, and legacy FTB baked `minecraft/`
+    trees copied wholesale; `overrides/` merge zip-slip-safe, bounded concurrency, then
+    register + build. Missing required mods abort; optional mods warn. Tests run against
+    an in-process mock of all three upstreams.
+  - **Updates** for imported packs (Prism-style): the registry stores
+    `{provider, project, file}` provenance, so a pack row gets an "Update" action —
+    re-imports the chosen (default newest) version in place, prunes dropped mods for
+    manifest packs, wipes and replaces baked FTB trees, re-merges overrides, bumps
+    `pack.json`'s version and rebuilds. Same-version requests report `{updated: false}`;
+    hand-built packs are refused with 400.
 - [x] **End-to-End Tests:**
   - Live HTTP round-trips using the real `WorldArchiver` and `BackupSyncClient`
     (upload → list → download → byte-identical restore), policy refusal, token gating,

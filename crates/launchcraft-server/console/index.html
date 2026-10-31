@@ -167,7 +167,7 @@ table.file-table { width: 100%; border-collapse: collapse; background: var(--bg-
       <div class="action-group">
         <button class="btn btn-primary" id="pack-new">+ New Pack</button>
         <button class="btn" id="pack-add">Add Existing</button>
-        <button class="btn" id="pack-curse" title="Browse CurseForge and import a modpack">Add from CurseForge…</button>
+        <button class="btn" id="pack-curse" title="Browse CurseForge, Modrinth and FTB and import a modpack">Browse Modpacks…</button>
         <button class="btn" id="pack-refresh">Refresh</button>
       </div>
     </div>
@@ -189,26 +189,24 @@ table.file-table { width: 100%; border-collapse: collapse; background: var(--bg-
   </section>
 </main>
 
-<!-- CurseForge modpack browser (opens from Pack Manager). -->
+<!-- Modpack browser: CurseForge + Modrinth + FTB (opens from Pack Manager). -->
 <div class="cf-overlay" id="cf-overlay" style="display:none">
   <div class="cf-modal">
     <div class="cf-header">
-      <span class="cf-title">CurseForge</span>
+      <span class="cf-title">Modpack Browser</span>
       <button class="btn cf-close" id="cf-close">✕ Close</button>
     </div>
-    <p class="cf-note">Note: CurseForge allows creators to block access to third-party tools like this
-      console. As such, you may need to manually download some mods to be able to install a modpack.</p>
+    <p class="cf-note">Browsing CurseForge, Modrinth and FTB. CurseForge needs a server-side
+      LAUNCHCRAFT_CURSEFORGE_KEY, and its creators can block third-party tools, so a few packs
+      may need manual mod downloads.</p>
     <div class="cf-search-row">
+      <select class="field-input" id="cf-provider" style="width:auto"></select>
       <button class="btn" id="cf-filter">Filter options</button>
       <input class="field-input" id="cf-search" placeholder="Search and filter…" style="flex:1">
     </div>
     <div class="cf-filters" id="cf-filters" style="display:none">
       <span>Game version</span>
       <input class="field-input" id="cf-game" placeholder="e.g. 1.20.4">
-      <span>Class</span>
-      <select class="field-input" id="cf-class" style="width:auto">
-        <option value="4471">Modpacks</option>
-      </select>
     </div>
     <div class="cf-body">
       <div class="cf-list" id="cf-list"><div class="empty" style="border:none">Search to list modpacks.</div></div>
@@ -394,7 +392,7 @@ async function loadPacks() {
     group.appendChild(mk("Modify", "", () => openPackForm("modify", p)));
     group.appendChild(mk("Check", "", () => packAction(p.id, "check")));
     group.appendChild(mk("Build", "", () => packAction(p.id, "build")));
-    if (p.curseforge) group.appendChild(mk("CF Update", "", () => cfOpenUpdate(p)));
+    if (p.source) group.appendChild(mk("Update", "", () => cfOpenUpdate(p)));
     group.appendChild(mk("Remove", "btn-danger", () => packAction(p.id, "remove")));
     td.appendChild(group);
     tr.appendChild(td);
@@ -471,9 +469,9 @@ async function packAction(id, action) {
 
 let packFormMode = null, packFormId = null;
 
-// ---------- CurseForge modpack browser ----------
-const cf = { packs: [], total: 0, sel: null, versions: [], ready: null, shown: 0,
-             mode: "add", updateId: null, currentFile: null };
+// ---------- Modpack browser (CurseForge / Modrinth / FTB) ----------
+const cf = { providers: [], packs: [], total: 0, page: 0, sel: null, versions: [],
+             ready: null, mode: "add", updateId: null, updateProvider: null, currentFile: null };
 function cfStatus(msg, isErr) {
   const el = $("cf-status");
   el.textContent = msg;
@@ -482,13 +480,18 @@ function cfStatus(msg, isErr) {
 function slugify(name) {
   const s = (name || "").toLowerCase()
     .replace(/[^a-z0-9._-]+/g, "-").replace(/^[.-]+/, "").slice(0, 40);
-  return s || "curse-pack";
+  return s || "modpack";
 }
-/// "add" browses the whole site; "update" re-imports one registered pack.
+function cfProviderLabel(id) {
+  const p = cf.providers.find((x) => x.id === id);
+  return p ? p.name : id;
+}
+/// "add" browses the selected provider; "update" re-imports one sourced pack.
 function cfSetMode(mode, row) {
   cf.mode = mode;
   cf.updateId = mode === "update" ? row.id : null;
-  cf.currentFile = mode === "update" ? row.curseforge.file_id : null;
+  cf.updateProvider = mode === "update" ? row.source.provider : null;
+  cf.currentFile = mode === "update" ? row.source.file : null;
   const up = mode === "update";
   document.querySelector(".cf-search-row").style.display = up ? "none" : "flex";
   $("cf-filters").style.display = "none";
@@ -497,36 +500,46 @@ function cfSetMode(mode, row) {
   $("cf-verlabel").textContent = up ? "Update to:" : "Version selected:";
   $("cf-add").textContent = up ? "⟳ Update" : "＋ Add";
 }
+/// Provider for the current mode: the picker while adding, the source when updating.
+function cfProvider() {
+  return cf.mode === "update" ? cf.updateProvider : $("cf-provider").value;
+}
 async function cfReady() {
   if (cf.ready === null) {
     try {
-      cf.ready = (await getJSON("/console/curseforge")).configured;
+      const data = await getJSON("/console/modpacks");
+      cf.providers = data.providers;
+      cf.ready = true;
+      const sel = $("cf-provider");
+      sel.innerHTML = "";
+      for (const p of cf.providers) {
+        const o = el("option");
+        o.value = p.id;
+        o.textContent = p.configured ? p.name : p.name + " (not configured)";
+        if (p.hint) o.title = p.hint;
+        sel.appendChild(o);
+      }
+      sel.value = cf.providers[0].id;
     } catch (e) { cf.ready = false; cfStatus(e.message, true); }
-  }
-  if (!cf.ready) {
-    const box = $("cf-list");
-    box.innerHTML = "";
-    box.appendChild(el("div", "empty",
-      "CurseForge is not configured on this server.\nSet LAUNCHCRAFT_CURSEFORGE_KEY (a free key from\nhttps://developers.curseforge.org) and restart."));
   }
   return cf.ready;
 }
 async function cfSearch(reset = true) {
-  if (!cf.ready) return;
-  if (reset) { cf.packs = []; cf.shown = 0; }
+  if (!(await cfReady())) return;
+  if (reset) { cf.packs = []; cf.page = 0; } else cf.page += 1;
   const p = new URLSearchParams();
+  p.set("provider", $("cf-provider").value);
   const q = $("cf-search").value.trim();
   const gv = $("cf-game").value.trim();
   if (q) p.set("q", q);
   if (gv) p.set("game_version", gv);
   p.set("sort", $("cf-sort").value);
-  p.set("index", cf.shown);
-  cfStatus("Searching CurseForge…");
+  p.set("index", cf.page);
+  cfStatus("Searching " + cfProviderLabel(p.get("provider")) + "…");
   try {
-    const data = await getJSON("/console/curseforge/search?" + p);
+    const data = await getJSON("/console/modpacks/search?" + p);
     cf.packs = cf.packs.concat(data.packs);
     cf.total = data.total;
-    cf.shown = cf.packs.length;
     cfRenderList();
     cfStatus(cf.packs.length ? cf.packs.length + " of " + data.total + " modpack(s)" : "No modpacks found.");
   } catch (e) { cfStatus("Search failed: " + e.message, true); }
@@ -556,45 +569,48 @@ async function cfOpen() {
   if (!(await cfReady())) return;
   if (!cf.packs.length) cfSearch();
 }
-/// Open the browser in update mode for one CurseForge-sourced pack row.
+/// Open the browser in update mode for one sourced pack row.
 async function cfOpenUpdate(row) {
   $("cf-overlay").style.display = "flex";
   cfSetMode("update", row);
   cf.sel = null;
   cf.versions = [];
   if (!(await cfReady())) return;
+  const label = cfProviderLabel(row.source.provider);
   const lst = $("cf-list");
   lst.innerHTML = "";
   const info = el("div", "empty",
-    "This pack was imported from CurseForge.\nPick a version to re-import it into the same workspace.");
+    "This pack was imported from " + label + ".\nPick a version to re-import it into the same workspace.");
   info.style.border = "none";
   lst.appendChild(info);
   const box = $("cf-detail");
   box.innerHTML = "";
   box.appendChild(el("div", "name", row.title || row.id));
-  box.appendChild(el("div", "dim", "Pack '" + row.id + "' · project " + row.curseforge.project_id
-    + " · currently on file " + row.curseforge.file_id));
+  box.appendChild(el("div", "dim", "Pack '" + row.id + "' · " + label + " project "
+    + row.source.project + " · currently on " + row.source.file));
   box.appendChild(el("div", null,
-    "An update re-downloads the pack, re-fetches every mod (dropping mods the new version no longer uses), "
+    "An update re-downloads the pack, rebuilds its file set (dropping files the new version no longer uses), "
     + "re-applies the pack's overrides and rebuilds it. Your pack id and title are kept."));
   cfStatus("");
-  await cfLoadVersions(row.curseforge.project_id);
+  await cfLoadVersions(row.source.project);
 }
 /// Fill the footer version picker for a project; shared by both modes.
-async function cfLoadVersions(projectId) {
+async function cfLoadVersions(project) {
   $("cf-add").disabled = true;
   const sel = $("cf-version");
   sel.innerHTML = "";
   const loading = el("option"); loading.textContent = "Loading versions…"; sel.appendChild(loading);
   try {
-    const data = await getJSON("/console/curseforge/files?mod_id=" + projectId);
+    const q = new URLSearchParams({ provider: cfProvider(), project: String(project) });
+    const data = await getJSON("/console/modpacks/versions?" + q);
     cf.versions = data.versions;
     sel.innerHTML = "";
     cf.versions.forEach((v, vi) => {
       const o = el("option");
       o.value = String(vi);
-      o.textContent = [v.name, (v.game_versions || []).slice(0, 2).join(" "), v.size ? humanSize(v.size) : ""]
-        .filter(Boolean).join(" · ") + (v.id === cf.currentFile ? " · (installed)" : "");
+      const shown = [v.name || String(v.id), (v.game_versions || []).slice(0, 2).join(" "),
+                     v.size ? humanSize(v.size) : ""].filter(Boolean).join(" · ");
+      o.textContent = shown + (String(v.id) === String(cf.currentFile) ? " · (installed)" : "");
       sel.appendChild(o);
     });
     if (!cf.versions.length) {
@@ -619,7 +635,9 @@ async function cfSelect(i) {
   }
   const head = el("div");
   head.appendChild(el("div", "name", cf.sel.name));
-  head.appendChild(el("div", "dim", (cf.sel.downloads || 0).toLocaleString() + " downloads"));
+  head.appendChild(el("div", "dim", cf.sel.downloads
+    ? cf.sel.downloads.toLocaleString() + " downloads"
+    : cfProviderLabel($("cf-provider").value)));
   big.appendChild(head);
   box.appendChild(big);
   box.appendChild(el("div", null, cf.sel.description || ""));
@@ -654,13 +672,16 @@ async function cfAdd() {
   $("cf-add").disabled = true;
   cfStatus("Downloading '" + v.name + "' and every mod file, then building… (large packs take a while)");
   try {
-    const r = await getJSON("/console/curseforge/add", {
+    const r = await getJSON("/console/modpacks/add", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mod_id: cf.sel.id, file_id: v.id, id, title }),
+      body: JSON.stringify({
+        provider: cfProvider(), project: String(cf.sel.id),
+        file: String(v.id), id, title,
+      }),
     });
     cfStatus("✓ Added '" + id + "' v" + r.pack_version + " — " + r.file_count + " files, "
       + humanSize(r.total_bytes) + (r.warnings.length ? " (" + r.warnings.length + " optional mod(s) skipped)" : ""));
-    status("Imported CurseForge pack '" + id + "' v" + r.pack_version);
+    status("Imported modpack '" + id + "' v" + r.pack_version);
     setTimeout(() => { $("cf-overlay").style.display = "none"; loadCurrent(); }, 900);
   } catch (e) {
     cfStatus("Add failed: " + e.message, true);
@@ -670,21 +691,21 @@ async function cfAdd() {
 async function cfRunUpdate(v) {
   const id = cf.updateId;
   $("cf-add").disabled = true;
-  cfStatus("Re-importing '" + id + "' from file '" + v.name + "' and rebuilding… (large packs take a while)");
+  cfStatus("Re-importing '" + id + "' from version '" + (v.name || v.id) + "' and rebuilding… (large packs take a while)");
   try {
-    const r = await getJSON("/console/curseforge/update/" + encodeURIComponent(id), {
+    const r = await getJSON("/console/modpacks/update/" + encodeURIComponent(id), {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ file_id: v.id }),
+      body: JSON.stringify({ file: String(v.id) }),
     });
     if (!r.updated) {
-      cfStatus("Already on that CurseForge file — nothing to change.");
+      cfStatus("Already on that version — nothing to change.");
       $("cf-add").disabled = false;
       return;
     }
     cfStatus("✓ Updated '" + id + "' → v" + r.pack_version + " — " + r.file_count + " files, "
       + humanSize(r.total_bytes) + ", " + r.pruned + " stale file(s) pruned"
       + (r.warnings.length ? " (" + r.warnings.length + " optional mod(s) skipped)" : ""));
-    status("Updated CurseForge pack '" + id + "' to v" + r.pack_version);
+    status("Updated modpack '" + id + "' to v" + r.pack_version);
     setTimeout(() => { $("cf-overlay").style.display = "none"; loadCurrent(); }, 900);
   } catch (e) {
     cfStatus("Update failed: " + e.message, true);
@@ -718,6 +739,7 @@ $("pf-save").addEventListener("click", submitPackForm);
 $("pf-cancel").addEventListener("click", closePackForm);
 $("pack-curse").addEventListener("click", cfOpen);
 $("cf-close").addEventListener("click", () => { $("cf-overlay").style.display = "none"; });
+$("cf-provider").addEventListener("change", () => { cf.sel = null; cfSearch(); });
 $("cf-search").addEventListener("keydown", (e) => { if (e.key === "Enter") cfSearch(); });
 $("cf-filter").addEventListener("click", () => {
   const f = $("cf-filters");

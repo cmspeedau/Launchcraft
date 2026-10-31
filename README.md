@@ -162,8 +162,10 @@ docker compose up -d backup-server
 | `LAUNCHCRAFT_BACKUP_TOKEN` | *(unset)* | When set, every data endpoint requires `Authorization: Bearer` |
 | `LAUNCHCRAFT_MAX_UPLOAD_MB` | `256` | Per-upload size cap |
 | `LAUNCHCRAFT_REPO_DIST` | *(unset)* | Built `./dist` dir auto-registered into the Pack Manager on first boot |
-| `LAUNCHCRAFT_CURSEFORGE_KEY` | *(unset)* | CurseForge Core API key; enables **Add from CurseForge** in the console |
+| `LAUNCHCRAFT_CURSEFORGE_KEY` | *(unset)* | CurseForge Core API key; enables browsing CurseForge in the console |
 | `LAUNCHCRAFT_CURSEFORGE_URL` | `https://api.curseforge.com/v1` | CurseForge API root (override for mirrors/tests) |
+| `LAUNCHCRAFT_MODRINTH_URL` | `https://api.modrinth.com/v2` | Modrinth API root (keyless provider; override for mirrors/tests) |
+| `LAUNCHCRAFT_FTB_URL` | `https://dist.creeper.host/FTB2` | FTB legacy pack CDN root (keyless provider) |
 
 The launcher needs **one** URL for both jobs: enter `http://localhost:9090`
 as the **Server URL** (Home tab) and world backups go to
@@ -196,26 +198,37 @@ The **Java Settings** tab lists every Java runtime it finds on the machine
 (JAVA_HOME, `/usr/lib/jvm`, SDKMAN, macOS/Windows install trees) with its
 parsed version — pick one from the list or type a custom path.
 
-### Adding Packs from CurseForge (server-side)
+### Browsing & Adding Modpacks (CurseForge · Modrinth · FTB)
 
-In the console's **Pack Manager**, *Add from CurseForge…* opens a browser
-(search, filters, sort, and a version selector). It is entirely server-side:
-the browser never sees a CurseForge key — the console calls *this* server,
-which proxies the CurseForge Core API. **Add** downloads the chosen modpack
-zip, resolves every referenced mod (`manifest.json` for Forge packs,
-`modrinth.index.json` for Fabric), fetches each into the new pack's `src/`,
-merges the `overrides/`, and builds it — producing a normal Pack Manager pack
-served to launchers exactly like a hand-built one. A missing **required** mod
-aborts the import; optional mods are skipped with a warning. Enable it by
-setting `LAUNCHCRAFT_CURSEFORGE_KEY` (a free key from developers.curseforge.org).
+In the console's **Pack Manager**, *Browse Modpacks…* opens one provider-aware
+browser (search, game-version filter, sort, version selector) over three
+modpack hosts:
 
-Imported packs keep their CurseForge provenance (project + file id) in the
-registry, so the Pack Manager row gains a **CF Update** button: pick a newer
-version (default: the project's newest) and the server re-downloads the pack,
-re-fetches every mod, **prunes mods the new version dropped**, re-applies the
-overrides and rebuilds — id and title are kept. Asking for the file already
-installed is a no-op. Packs you built by hand have no provenance and no
-update button.
+| Provider | Upstream | Key | Pack archive |
+| :--- | :--- | :--- | :--- |
+| CurseForge | `api.curseforge.com/v1` (proxied) | `LAUNCHCRAFT_CURSEFORGE_KEY` | `manifest.json` + referenced mods |
+| Modrinth | `api.modrinth.com/v2` | none needed | `.mrpack` with direct-download URLs |
+| FTB | legacy catalog on `dist.creeper.host/FTB2` | none needed | baked `minecraft/` zip tree |
+
+All of it is server-side: the browser never sees a key — the console calls
+*this* server, which calls the provider. **Add** downloads the chosen pack
+file and turns it into a launchcraft pack: resolving and fetching every
+referenced mod (CurseForge), downloading the manifest's direct URLs
+(Modrinth), or copying the baked tree wholesale (FTB), then merging the
+`overrides/`, registering, and building — a normal Pack Manager pack served
+to launchers exactly like a hand-built one. A missing **required** mod aborts
+the import; optional mods are skipped with a warning. The CurseForge key comes
+free from developers.curseforge.org; without it the provider list simply shows
+CurseForge as not configured.
+
+Imported packs keep their provenance (`{provider, project, file}`) in the
+registry, so the Pack Manager row gains an **Update** button: pick a newer
+version (default: the provider's newest) and the server re-downloads and
+re-imports it into the same workspace — manifest-based packs have mods the new
+version dropped **pruned**, baked FTB packs are wiped and replaced outright —
+re-applies the overrides and rebuilds; id and title are kept. Asking for the
+version already installed is a no-op. Packs you built by hand have no
+provenance and no update button.
 
 ---
 

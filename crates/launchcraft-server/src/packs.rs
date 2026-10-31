@@ -27,14 +27,18 @@ pub enum RegistryError {
     Json(#[from] serde_json::Error),
 }
 
-/// Where a pack came from on CurseForge, so the console can offer an
-/// in-place "CF Update" that re-imports a newer file of the same project.
+/// Where a pack was imported from, so the console can re-import a newer
+/// version in place. Ids are stored as strings because every provider
+/// counts differently: CurseForge numeric project/file ids, Modrinth slug +
+/// version id, FTB pack dir + version token.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CurseSource {
-    /// CurseForge project (mod) id.
-    pub project_id: u64,
-    /// The project file last imported; an update bumps this.
-    pub file_id: u64,
+pub struct PackSource {
+    /// "curseforge" | "modrinth" | "ftb"
+    pub provider: String,
+    /// Provider-side project handle (project id / slug / pack dir).
+    pub project: String,
+    /// The provider file/version last imported; an update bumps this.
+    pub file: String,
 }
 
 /// One row of the Pack Manager table.
@@ -51,9 +55,9 @@ pub struct PackEntry {
     pub dist: PathBuf,
     #[serde(default)]
     pub created_at: String,
-    /// Set for packs imported from CurseForge; drives the update button.
+    /// Set for packs imported from a modpack host; drives the update button.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub curseforge: Option<CurseSource>,
+    pub source: Option<PackSource>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -132,7 +136,7 @@ mod tests {
             src: None,
             dist: PathBuf::from("/srv/dist").join(id),
             created_at: String::new(),
-            curseforge: None,
+            source: None,
         }
     }
 

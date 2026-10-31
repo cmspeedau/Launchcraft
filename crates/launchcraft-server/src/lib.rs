@@ -9,6 +9,9 @@
 pub mod api;
 pub mod console;
 pub mod curseforge;
+pub mod ftb;
+pub mod modpacks;
+pub mod modrinth;
 pub mod packs;
 pub mod store;
 
@@ -43,6 +46,10 @@ pub struct ServerConfig {
     pub curseforge_key: Option<String>,
     /// CurseForge API root; swap for a mirror in tests. (`LAUNCHCRAFT_CURSEFORGE_URL`)
     pub curseforge_url: String,
+    /// Modrinth API root; keyless provider. (`LAUNCHCRAFT_MODRINTH_URL`)
+    pub modrinth_url: String,
+    /// FTB legacy pack CDN root; keyless provider. (`LAUNCHCRAFT_FTB_URL`)
+    pub ftb_url: String,
 }
 
 impl ServerConfig {
@@ -70,6 +77,14 @@ impl ServerConfig {
                 .ok()
                 .filter(|u| !u.is_empty())
                 .unwrap_or_else(|| "https://api.curseforge.com/v1".into()),
+            modrinth_url: std::env::var("LAUNCHCRAFT_MODRINTH_URL")
+                .ok()
+                .filter(|u| !u.is_empty())
+                .unwrap_or_else(|| "https://api.modrinth.com/v2".into()),
+            ftb_url: std::env::var("LAUNCHCRAFT_FTB_URL")
+                .ok()
+                .filter(|u| !u.is_empty())
+                .unwrap_or_else(|| "https://dist.creeper.host/FTB2".into()),
         }
     }
 }
@@ -82,11 +97,15 @@ pub struct AppState {
     pub token: Option<String>,
     pub repo_dist: Option<PathBuf>,
     pub max_upload_bytes: usize,
-    /// CurseForge Core API key (`None` disables the modpack browser).
+    /// CurseForge Core API key (`None` disables that provider in the browser).
     pub curse_key: Option<String>,
     /// CurseForge API root used by the browser.
     pub curse_base: String,
-    /// Shared outbound HTTP client for the CurseForge proxy.
+    /// Modrinth API root (keyless provider).
+    pub modrinth_base: String,
+    /// FTB legacy CDN root (keyless provider).
+    pub ftb_base: String,
+    /// Shared outbound HTTP client for the modpack providers.
     pub http: reqwest::Client,
 }
 
@@ -102,7 +121,12 @@ impl AppState {
             max_upload_bytes: cfg.max_upload_mb.max(1) as usize * 1024 * 1024,
             curse_key: cfg.curseforge_key.clone(),
             curse_base: cfg.curseforge_url.trim_end_matches('/').to_string(),
-            http: reqwest::Client::new(),
+            modrinth_base: cfg.modrinth_url.trim_end_matches('/').to_string(),
+            ftb_base: cfg.ftb_url.trim_end_matches('/').to_string(),
+            http: reqwest::Client::builder()
+                .user_agent("LaunchcraftServer/0.1 (self-hosted modpack server)")
+                .build()
+                .unwrap_or_default(),
         });
         state.seed_registry_from_repo_dist()?;
         Ok(state)
@@ -135,7 +159,7 @@ impl AppState {
             src: None,
             dist: dist.clone(),
             created_at: chrono::Utc::now().to_rfc3339(),
-            curseforge: None,
+            source: None,
         });
         registry.save(&self.data_dir)?;
         tracing::info!(
@@ -284,11 +308,11 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         )
         .route("/console/packs/:id/check", post(console::packs_check))
         .route("/console/packs/:id/build", post(console::packs_build))
-        .route("/console/curseforge", get(curseforge::status))
-        .route("/console/curseforge/search", get(curseforge::search))
-        .route("/console/curseforge/files", get(curseforge::files))
-        .route("/console/curseforge/add", post(curseforge::add))
-        .route("/console/curseforge/update/:id", post(curseforge::update))
+        .route("/console/modpacks", get(modpacks::providers))
+        .route("/console/modpacks/search", get(modpacks::search))
+        .route("/console/modpacks/versions", get(modpacks::versions))
+        .route("/console/modpacks/add", post(modpacks::add))
+        .route("/console/modpacks/update/:id", post(modpacks::update))
         .with_state(state.clone());
     let api: axum::Router<()> = api_routes().with_state(state);
     Router::new()
