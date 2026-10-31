@@ -209,7 +209,6 @@ modpack hosts:
 | CurseForge | `api.curseforge.com/v1` (proxied) | `LAUNCHCRAFT_CURSEFORGE_KEY` | `manifest.json` + referenced mods |
 | Modrinth | `api.modrinth.com/v2` | none needed | `.mrpack` with direct-download URLs |
 | FTB | legacy catalog on `dist.creeper.host/FTB2` | none needed | baked `minecraft/` zip tree |
-| Local zip | *(a file you pick)* | none needed | any of the three archive flavours |
 
 All of it is server-side: the browser never sees a key — the console calls
 *this* server, which calls the provider. **Add** downloads the chosen pack
@@ -231,11 +230,11 @@ re-applies the overrides and rebuilds; id and title are kept. Asking for the
 version already installed is a no-op. Packs you built by hand have no
 provenance and no update button.
 
-Custom packs ride the same rail: choose **Local zip** in the provider
-selector, pick any archive from your machine (CurseForge zip, `.mrpack`, or a
-baked `minecraft/` tree), name the pack, and it streams into the identical
-import-and-build pipeline — for baked trees the title/version fields fill in
-the metadata the archive itself doesn't carry. Size-capped by
+Custom packs get their own **Upload Modpack…** button next to the browser:
+pick any archive from your machine (CurseForge zip, `.mrpack`, or a baked
+`minecraft/` tree), name the pack, and it streams into the identical
+import-and-build pipeline — for baked trees the version/game-version fields
+fill in the metadata the archive itself doesn't carry. Size-capped by
 `LAUNCHCRAFT_MAX_UPLOAD_MB` like everything else; uploaded packs simply never
 offer an update, since there is no upstream feed.
 

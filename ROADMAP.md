@@ -246,9 +246,9 @@ Phase 1: Workspace & Core Foundation (Done)
     manifest packs, wipes and replaces baked FTB trees, re-merges overrides, bumps
     `pack.json`'s version and rebuilds. Same-version requests report `{updated: false}`;
     hand-built packs are refused with 400.
-  - **Local zip upload** — a fourth entry in the same browser (`POST
+  - **Upload Modpack…** — a sibling window of the browser (`POST
     /console/modpacks/upload`, body-gated by `LAUNCHCRAFT_MAX_UPLOAD_MB`): the picked
-    archive streams into the identical import pipeline; query fields supply name/version
+    archive streams into the identical import pipeline; optional fields supply name/version
     for manifest-less baked trees; uploaded packs register without provenance (no Update).
 - [x] **End-to-End Tests:**
   - Live HTTP round-trips using the real `WorldArchiver` and `BackupSyncClient`
