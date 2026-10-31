@@ -44,6 +44,13 @@ Launchcraft is designed for speed, security, and portability. It replaces tradit
   - Scans modpack source trees, computes CAS blobs, and emits synchronized `manifest.json` distributions ready for S3 / CDN hosting.
 - **Dockerized CI/CD Toolchain:**
   - Ready-to-use container for automated modpack building in GitHub Actions or GitLab CI pipelines.
+- **Server Console (`launchcraft-server`):**
+  - Serves the backup endpoints the clients POST to, with BLAKE3 checksum storage,
+    server-side upload policy enforcement, and optional bearer-token auth.
+  - Embedded admin GUI (browser-based): dashboard, archive browser with download/delete,
+    upload-policy toggle, and a SKCraft-inspired **Pack Manager** — a pack registry with
+    New Pack (scaffold a source workspace), Add Existing, Modify, in-process Build
+    (runs the pack builder), and Check (verifies every CAS blob by BLAKE3).
 
 ---
 
@@ -61,7 +68,8 @@ Launchcraft/
 │   ├── launchcraft-runtime/     # JRE provisioning, process spawner, and JVM argument builder
 │   ├── launchcraft-auth/        # Microsoft OAuth, Xbox Live, and token management
 │   ├── launchcraft-backup/      # World backup zipping engine, server policy, and cloud sync
-│   └── launchcraft-builder/     # Headless CLI for scanning and building CAS modpacks
+│   ├── launchcraft-builder/     # Headless CLI for scanning and building CAS modpacks
+│   └── launchcraft-server/      # Backup API + embedded admin console for server ops
 ├── compose.yaml                 # Builder + local pack repository (port 8080) stack
 ├── docker/                      # repo-server static hosting config
 ├── Dockerfile                   # Multi-stage container for headless pack compilation
@@ -134,6 +142,34 @@ the builder → server → client round-trip is covered end-to-end by the
 workspace test suite. The same layout is ready for S3, nginx, or any static
 CDN — no path rewriting required.
 
+### Running the Server Console (Backups)
+
+`launchcraft-server` is the server-side counterpart of the backup engine:
+it accepts the world ZIP uploads clients push from their *World Saves* tab
+and serves an admin console for the operator.
+
+```bash
+# Native
+cargo run -p launchcraft-server
+# Or with Compose (persisted in ./server-data, console on port 9090)
+docker compose up -d backup-server
+```
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `LAUNCHCRAFT_ADDR` | `0.0.0.0:9090` | Listen address |
+| `LAUNCHCRAFT_DATA_DIR` | `./launchcraft-server-data` | Stores `backups/` + `policy.json` |
+| `LAUNCHCRAFT_BACKUP_TOKEN` | *(unset)* | When set, every data endpoint requires `Authorization: Bearer` |
+| `LAUNCHCRAFT_MAX_UPLOAD_MB` | `256` | Per-upload size cap |
+| `LAUNCHCRAFT_REPO_DIST` | *(unset)* | Built `./dist` dir auto-registered into the Pack Manager on first boot |
+
+Point an instance's **Backup server URL** at `http://localhost:9090/api`
+(the client contract is `POST /api/backups/upload?filename=…` /
+`GET /api/backups/download?filename=…`), and open
+`http://localhost:9090` for the console. Flipping the console's policy
+toggle makes the API answer `403` to uploads, which clients surface as
+"disabled by server policy".
+
 ---
 
 ## Quickstart & Local Development
@@ -169,6 +205,9 @@ cargo run -p launchcraft-builder -- --help
 
 # Run the desktop application
 cargo run -p launchcraft-desktop
+
+# Run the backup server with its admin console (http://localhost:9090)
+cargo run -p launchcraft-server
 ```
 
 ---

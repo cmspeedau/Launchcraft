@@ -76,6 +76,8 @@ Phase 1: Workspace & Core Foundation (Done)
    ├── Phase 6: Headless Pack Builder & Docker Image (Done)
    │
    └── Phase 7: Save Game Backups & World Cloud Sync (Done)
+         │
+         └── Phase 8: Server Console `launchcraft-server` (Done)
 ```
 
 ---
@@ -188,6 +190,31 @@ Phase 1: Workspace & Core Foundation (Done)
 - [x] **Desktop UI & IPC Integration:**
   - Worlds file viewer tab in `launchcraft-desktop`.
   - Action buttons for: "Backup World (ZIP)", "Upload to Server", "Download World ZIP", and "Restore Backup".
+
+---
+
+### Phase 8: Server Console (`launchcraft-server`) (Complete)
+*Objective: Server-side counterpart to the backup engine — a backup store API and admin GUI for server operators.*
+
+- [x] **Backup API (`crates/launchcraft-server`):**
+  - Implements the exact contract `launchcraft-backup::BackupSyncClient` speaks:
+    `POST /backups/upload?filename=…` (raw zip body) and `GET /backups/download?filename=…`,
+    mounted at both `/api/*` and the root, with optional `Authorization: Bearer` auth.
+  - JSON listing (`GET /backups`) and console-side deletion (`DELETE /backups/<name>`);
+    BLAKE3 checksum sidecars per archive, atomic writes, strict filename allowlist (no traversal).
+  - Server-side policy store (`policy.json`): while uploads are disabled the API answers `403`,
+    mirroring the client-side refusal.
+- [x] **Admin Console (embedded single-page GUI):**
+  - Dashboard (archive count, storage used, newest upload, per-world counts), Backups
+    (list / download / delete with checksums), Policy toggle, and a Pack Manager
+    (pack registry with New Pack / Add Existing / Modify / Build / Check, SKCraft-style).
+- [x] **Deployment:**
+  - `docker/Dockerfile.server` and a `backup-server` Compose service (port 9090,
+    `./server-data` volume, optional `LAUNCHCRAFT_BACKUP_TOKEN`).
+- [x] **End-to-End Tests:**
+  - Live HTTP round-trips using the real `WorldArchiver` and `BackupSyncClient`
+    (upload → list → download → byte-identical restore), policy refusal, token gating,
+    traversal rejection, and root-mount aliases.
 
 ---
 

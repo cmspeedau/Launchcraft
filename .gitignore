@@ -8,3 +8,6 @@ data/
 *.log
 pack/
 dist/
+
+# OpenChamber session screenshots
+.openchamber/
