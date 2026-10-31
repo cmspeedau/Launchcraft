@@ -12,6 +12,7 @@
 # clients can sync the pack (manifest.json + CAS blobs):
 #
 #   docker compose up -d repo-server                 # serve on http://localhost:8080
+#   docker compose up -d backup-server               # backup API + admin console on http://localhost:9090
 #   docker compose logs -f repo-server
 #   docker compose down
 #
@@ -56,6 +57,32 @@ services:
       - ./docker/repo-server.conf:/etc/nginx/conf.d/default.conf:ro
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:80/"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  backup-server:
+    # World backup API + admin console (http://localhost:9090).
+    # Set an instance's "Backup server URL" to http://localhost:9090/api.
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.server
+    restart: unless-stopped
+    ports:
+      - "${BACKUP_PORT:-9090}:9090"
+    volumes:
+      - ./server-data:/data
+      # Read-only view of the built pack, for the console's Packs tab.
+      - ./dist:/repo/dist:ro
+    environment:
+      RUST_LOG: ${RUST_LOG:-info}
+      LAUNCHCRAFT_REPO_DIST: /repo/dist
+      # Leave empty for an open API on a trusted LAN; set to require
+      # Authorization: Bearer on every data endpoint.
+      LAUNCHCRAFT_BACKUP_TOKEN: ${LAUNCHCRAFT_BACKUP_TOKEN:-}
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9090"]
       interval: 15s
       timeout: 3s
       retries: 3
