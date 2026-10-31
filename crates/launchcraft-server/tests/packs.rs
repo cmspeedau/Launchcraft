@@ -278,3 +278,94 @@ fn src_placeholder(anywhere: &Path) -> PathBuf {
     // Any existing directory is fine for src validation purposes.
     anywhere.to_path_buf()
 }
+
+#[tokio::test]
+async fn built_pack_is_served_to_the_real_sync_engine() {
+    // Full round trip: build via console → public /packs endpoints →
+    // launchcraft-sync materializes the game dir. Token is ON to prove the
+    // distribution routes stay public like a static repo-server.
+    let data = tempfile::tempdir().unwrap();
+    let src = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(src.path().join("mods")).unwrap();
+    std::fs::write(src.path().join("mods/test.jar"), b"sync-payload").unwrap();
+    std::fs::create_dir_all(src.path().join("config")).unwrap();
+    std::fs::write(src.path().join("config/game.cfg"), b"key=1").unwrap();
+
+    let mut cfg = cfg_for(data.path());
+    cfg.token = Some("ops".into());
+    let base = spawn(cfg).await;
+    let authed = reqwest::Client::new();
+
+    authed
+        .post(format!("{base}/console/packs/new"))
+        .bearer_auth("ops")
+        .json(&serde_json::json!({ "id": "dist-pack", "title": "Dist" }))
+        .send()
+        .await
+        .unwrap();
+    authed
+        .put(format!("{base}/console/packs/dist-pack"))
+        .bearer_auth("ops")
+        .json(&serde_json::json!({ "src": src.path().display().to_string() }))
+        .send()
+        .await
+        .unwrap();
+    authed
+        .post(format!("{base}/console/packs/dist-pack/build"))
+        .bearer_auth("ops")
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+
+    // Public list, no token.
+    let list: serde_json::Value = reqwest::Client::new()
+        .get(format!("{base}/packs"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(list["packs"].as_array().unwrap().len(), 1);
+    assert_eq!(list["packs"][0]["id"], "dist-pack");
+    assert_eq!(list["packs"][0]["file_count"], 2);
+
+    // The sync engine consumes the served layout as-is.
+    let repo_base = format!("{base}/packs/dist-pack");
+    let engine = launchcraft_sync::SyncEngine::new(std::sync::Arc::new(
+        launchcraft_sync::CasStore::new(tempfile::tempdir().unwrap().path()),
+    ));
+    let manifest = engine
+        .fetch_remote_manifest(&launchcraft_core::instance::RepositoryConfig {
+            url: repo_base.clone(),
+            etag: None,
+        })
+        .await
+        .expect("manifest fetch");
+    assert_eq!(manifest.files.len(), 2);
+
+    let game = tempfile::tempdir().unwrap();
+    engine
+        .synchronize(&repo_base, game.path(), &manifest, None)
+        .await
+        .expect("sync");
+    assert_eq!(
+        std::fs::read(game.path().join("mods/test.jar")).unwrap(),
+        b"sync-payload"
+    );
+    assert_eq!(
+        std::fs::read(game.path().join("config/game.cfg")).unwrap(),
+        b"key=1"
+    );
+
+    // Bad hash references are rejected, not resolved.
+    let bad = reqwest::Client::new()
+        .get(format!(
+            "{base}/packs/dist-pack/cas/objects/..%2F..%2Fetc/passwd"
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert!(bad.status() == 404 || bad.status() == 400);
+}

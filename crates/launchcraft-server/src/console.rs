@@ -111,7 +111,7 @@ pub async fn packs_list(
 }
 
 /// Reads a pack's `dist/manifest.json` to compute its table status.
-fn dist_status(dist: &std::path::Path) -> serde_json::Value {
+pub(crate) fn dist_status(dist: &std::path::Path) -> serde_json::Value {
     let manifest_path = dist.join("manifest.json");
     match std::fs::read_to_string(&manifest_path) {
         Err(_) => serde_json::json!({ "status": "not-built" }),

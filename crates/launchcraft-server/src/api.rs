@@ -85,3 +85,74 @@ pub async fn delete_backup(
     tracing::info!("deleted {filename}");
     Ok(Json(serde_json::json!({ "deleted": filename })))
 }
+
+// ---------------------------------------------------------------------------
+// Client-facing pack distribution (SKCraft-style): NO auth — these endpoints
+// are exactly what a public nginx repo-server exposes today, served straight
+// from each registered pack's dist directory.
+// ---------------------------------------------------------------------------
+
+/// `GET /packs` — installable pack list shown by launcher clients.
+pub async fn client_pack_list(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let registry = crate::packs::PackRegistry::load(&state.data_dir)?;
+    let mut packs = Vec::new();
+    for p in &registry.packs {
+        let status = crate::console::dist_status(&p.dist);
+        if status["status"] != serde_json::json!("ok") {
+            continue; // not-built / broken packs stay invisible to clients
+        }
+        packs.push(serde_json::json!({
+            "id": p.id,
+            "title": p.title,
+            "game_version": status["game_version"],
+            "pack_version": status["pack_version"],
+            "loader": status["loader"],
+            "file_count": status["file_count"],
+            "total_bytes": status["total_bytes"],
+        }));
+    }
+    Ok(Json(serde_json::json!({ "packs": packs })))
+}
+
+fn registered_dist(state: &AppState, id: &str) -> Result<std::path::PathBuf, ApiError> {
+    let registry = crate::packs::PackRegistry::load(&state.data_dir)?;
+    registry
+        .find(id)
+        .map(|p| p.dist.clone())
+        .filter(|d| d.is_dir())
+        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, format!("pack not found: {id}")))
+}
+
+/// `GET /packs/:id/manifest.json` — the sync engine's manifest fetch.
+pub async fn pack_manifest_file(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let dist = registered_dist(&state, &id)?;
+    let bytes = std::fs::read(dist.join("manifest.json"))
+        .map_err(|_| ApiError::new(StatusCode::NOT_FOUND, "pack has no manifest.json yet"))?;
+    Ok(([(header::CONTENT_TYPE, "application/json")], bytes))
+}
+
+/// `GET /packs/:id/cas/objects/:shard/:hash` — one CAS blob.
+pub async fn pack_blob(
+    State(state): State<Arc<AppState>>,
+    Path((id, shard, hash)): Path<(String, String, String)>,
+) -> Result<impl IntoResponse, ApiError> {
+    // The shard must be the hash's own prefix and the hash plain lowercase
+    // hex, so the resolved path can never escape the pack's CAS directory.
+    let valid_hash = hash.len() == 64
+        && hash
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase());
+    if !valid_hash || shard != &hash[..2] {
+        return Err(ApiError::bad_request("invalid CAS object reference"));
+    }
+    let dist = registered_dist(&state, &id)?;
+    let path = dist.join("cas").join("objects").join(shard).join(&hash);
+    let bytes = std::fs::read(&path)
+        .map_err(|_| ApiError::new(StatusCode::NOT_FOUND, "CAS object not found"))?;
+    Ok(([(header::CONTENT_TYPE, "application/octet-stream")], bytes))
+}

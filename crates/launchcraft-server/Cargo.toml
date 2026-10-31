@@ -22,5 +22,6 @@ anyhow = { workspace = true }
 
 [dev-dependencies]
 launchcraft-backup = { path = "../launchcraft-backup" }
+launchcraft-sync = { path = "../launchcraft-sync" }
 reqwest = { workspace = true }
 tempfile = { workspace = true }

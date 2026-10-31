@@ -239,6 +239,9 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             )
             .route("/backups/download", get(api::download_backup))
             .route("/backups/:filename", delete(api::delete_backup))
+            .route("/packs", get(api::client_pack_list))
+            .route("/packs/:id/manifest.json", get(api::pack_manifest_file))
+            .route("/packs/:id/cas/objects/:shard/:hash", get(api::pack_blob))
     };
     let console_routes: axum::Router<()> = Router::new()
         .route("/", get(console::index))
