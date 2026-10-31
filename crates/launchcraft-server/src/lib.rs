@@ -312,6 +312,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/console/modpacks/search", get(modpacks::search))
         .route("/console/modpacks/versions", get(modpacks::versions))
         .route("/console/modpacks/add", post(modpacks::add))
+        .route(
+            "/console/modpacks/upload",
+            post(modpacks::upload).route_layer(DefaultBodyLimit::max(max_upload_bytes)),
+        )
         .route("/console/modpacks/update/:id", post(modpacks::update))
         .with_state(state.clone());
     let api: axum::Router<()> = api_routes().with_state(state);

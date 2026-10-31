@@ -990,6 +990,98 @@ async fn required_mod_failure_aborts_the_import() {
 }
 
 #[tokio::test]
+async fn local_upload_imports_a_forge_zip_without_provenance() {
+    let (mock, _m) = spawn_mock().await;
+    let data = tempfile::tempdir().unwrap();
+    let base = spawn_server(data.path(), format!("{mock}/v1"), Some(KEY.into()), &mock).await;
+    let client = reqwest::Client::new();
+
+    // CurseForge-style zip: manifest with no file references plus overrides.
+    let zip = zip_build(&[
+        (
+            "manifest.json",
+            br#"{
+            "manifestType": "modPack", "manifestVersion": 1,
+            "name": "Home Made", "version": "3.1",
+            "files": [], "overrides": "overrides",
+            "minecraft": { "version": "1.20.1", "modLoaders": [{ "id": "forge-47.2.0", "primary": true }] }
+            }"#,
+        ),
+        ("overrides/config/home.cfg", b"custom=yes".as_slice()),
+    ]);
+    let res = client
+        .post(format!(
+            "{base}/console/modpacks/upload?id=home&title=Home+Made"
+        ))
+        .header("content-type", "application/zip")
+        .body(zip)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200, "{:?}", res.text().await);
+    let built: serde_json::Value = res.json().await.unwrap();
+    assert_eq!(built["provider"], "local");
+    assert_eq!(built["pack_version"], "3.1");
+    assert_eq!(built["game_version"], "1.20.1");
+
+    let src = data.path().join("packs/home/src");
+    assert_eq!(
+        std::fs::read(src.join("config/home.cfg")).unwrap(),
+        b"custom=yes"
+    );
+
+    // Uploaded packs have no upstream: the row shows a null source and the
+    // registry omits provenance, so no Update button appears for them.
+    let packs: serde_json::Value = client
+        .get(format!("{base}/console/packs"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let row = packs["packs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == "home")
+        .unwrap();
+    assert!(row["source"].is_null());
+    let registry: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(data.path().join("packs.json")).unwrap())
+            .unwrap();
+    let entry = registry["packs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == "home")
+        .unwrap();
+    assert!(entry.get("source").is_none());
+
+    // A broken zip is refused with 400 and leaves nothing registered.
+    let res = client
+        .post(format!("{base}/console/modpacks/upload?id=broken"))
+        .body(b"not-a-zip".to_vec())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 400);
+    let packs: serde_json::Value = client
+        .get(format!("{base}/console/packs"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(packs["packs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|p| p["id"] != "broken"));
+}
+
+#[tokio::test]
 async fn update_requires_provenance() {
     let (mock, _m) = spawn_mock().await;
     let data = tempfile::tempdir().unwrap();

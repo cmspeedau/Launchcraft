@@ -79,6 +79,7 @@ table.file-table { width: 100%; border-collapse: collapse; background: var(--bg-
 .cf-note { font-style: italic; color: var(--text-muted); font-size: .82rem; text-align: center; margin: .55rem 0 .7rem; }
 .cf-search-row { display: flex; gap: .5rem; align-items: center; }
 .cf-search-row input { font-family: inherit; }
+.cf-drop { flex: 1; display: flex; align-items: center; gap: .5rem; padding: .9rem; border: 1px dashed var(--border); border-radius: 6px; background: var(--bg-primary); }
 .cf-filters { display: flex; gap: .5rem; margin-top: .5rem; align-items: center; font-size: .8rem; color: var(--text-muted); }
 .cf-filters input { width: 150px; }
 .cf-body { flex: 1; display: flex; gap: 1rem; margin-top: .75rem; min-height: 0; }
@@ -469,8 +470,8 @@ async function packAction(id, action) {
 
 let packFormMode = null, packFormId = null;
 
-// ---------- Modpack browser (CurseForge / Modrinth / FTB) ----------
-const cf = { providers: [], packs: [], total: 0, page: 0, sel: null, versions: [],
+// ---------- Modpack browser (CurseForge / Modrinth / FTB / local zip) ----------
+const cf = { providers: [], packs: [], total: 0, page: 0, sel: null, versions: [], file: null,
              ready: null, mode: "add", updateId: null, updateProvider: null, currentFile: null };
 function cfStatus(msg, isErr) {
   const el = $("cf-status");
@@ -520,12 +521,25 @@ async function cfReady() {
         sel.appendChild(o);
       }
       sel.value = cf.providers[0].id;
+      // A hand-picked zip from disk rides the same import pipeline.
+      const loc = el("option");
+      loc.value = "local";
+      loc.textContent = "Local zip";
+      loc.title = "Upload a modpack archive from this computer: CurseForge zip, Modrinth .mrpack, or a baked FTB-style tree.";
+      sel.appendChild(loc);
     } catch (e) { cf.ready = false; cfStatus(e.message, true); }
   }
   return cf.ready;
 }
+function cfIsLocal() {
+  return cf.mode !== "update" && $("cf-provider").value === "local";
+}
 async function cfSearch(reset = true) {
   if (!(await cfReady())) return;
+  if (cfIsLocal()) return cfRenderLocal();
+  document.querySelector(".cf-search-row").style.display = "flex";
+  $("cf-verlabel").style.display = "";
+  $("cf-version").style.display = "";
   if (reset) { cf.packs = []; cf.page = 0; } else cf.page += 1;
   const p = new URLSearchParams();
   p.set("provider", $("cf-provider").value);
@@ -563,11 +577,79 @@ function cfRenderList() {
   });
   $("cf-more").style.display = cf.packs.length && cf.packs.length < cf.total ? "" : "none";
 }
+/// The "Local zip" source: file picker on the left, id/title on the right.
+function cfRenderLocal() {
+  cf.file = null; // a stale pick must not survive a pane rebuild
+  document.querySelector(".cf-search-row").style.display = "none";
+  $("cf-more").style.display = "none";
+  cf.versions = [];
+  $("cf-verlabel").style.display = "none";
+  $("cf-version").style.display = "none";
+  const lst = $("cf-list");
+  lst.innerHTML = "";
+  const note = el("div", "empty",
+    "Pick a modpack archive from this computer. Accepted: CurseForge zip\n(manifest.json), Modrinth .mrpack, or a baked tree (minecraft/…).");
+  note.style.border = "none";
+  lst.appendChild(note);
+  const drop = el("div", "cf-drop");
+  const fileIn = el("input");
+  fileIn.type = "file";
+  fileIn.id = "cf-file";
+  fileIn.accept = ".zip,.mrpack";
+  fileIn.onchange = () => {
+    cf.file = (fileIn.files && fileIn.files[0]) || null;
+    cfStatus(cf.file ? cf.file.name + " · " + humanSize(cf.file.size) : "");
+    cfVersionChanged();
+  };
+  drop.appendChild(fileIn);
+  lst.appendChild(drop);
+  const box = $("cf-detail");
+  box.innerHTML = "";
+  box.appendChild(el("div", "name", "Upload a custom modpack"));
+  box.appendChild(el("div", null,
+    "The archive is imported exactly like a downloaded pack: referenced mods are fetched, "
+    + "overrides merged, and the pack is built. It gets no Update button, since there is no "
+    + "upstream feed to update from."));
+  const grid = el("div", "form-grid");
+  const d1 = el("div"); d1.appendChild(el("label", null, "Pack id (registry)"));
+  const idIn = el("input", "field-input"); idIn.id = "cf-id"; idIn.placeholder = "e.g. my-pack";
+  d1.appendChild(idIn);
+  const d2 = el("div"); d2.appendChild(el("label", null, "Title"));
+  const tIn = el("input", "field-input"); tIn.id = "cf-title";
+  d2.appendChild(tIn);
+  grid.appendChild(d1); grid.appendChild(d2);
+  box.appendChild(grid);
+  cfVersionChanged();
+}
+async function cfUpload() {
+  if (!cf.file) { cfStatus("Pick a zip file first.", true); return; }
+  const id = ($("cf-id") ? $("cf-id").value : "").trim();
+  const title = ($("cf-title") ? $("cf-title").value : "").trim();
+  if (!id) { cfStatus("Pick a pack id first.", true); return; }
+  $("cf-add").disabled = true;
+  cfStatus("Uploading '" + cf.file.name + "' and importing, then building… (large packs take a while)");
+  const q = new URLSearchParams({ id });
+  if (title) q.set("title", title);
+  try {
+    const buf = await cf.file.arrayBuffer();
+    const r = await getJSON("/console/modpacks/upload?" + q, {
+      method: "POST", headers: { "Content-Type": "application/zip" }, body: buf,
+    });
+    cfStatus("✓ Added '" + id + "' v" + r.pack_version + " — " + r.file_count + " files, "
+      + humanSize(r.total_bytes) + (r.warnings.length ? " (" + r.warnings.length + " optional mod(s) skipped)" : ""));
+    status("Imported uploaded pack '" + id + "' v" + r.pack_version);
+    cf.file = null;
+    setTimeout(() => { $("cf-overlay").style.display = "none"; loadCurrent(); }, 900);
+  } catch (e) {
+    cfStatus("Upload failed: " + e.message, true);
+    $("cf-add").disabled = false;
+  }
+}
 async function cfOpen() {
   $("cf-overlay").style.display = "flex";
   cfSetMode("add", null);
   if (!(await cfReady())) return;
-  if (!cf.packs.length) cfSearch();
+  if (cfIsLocal() || !cf.packs.length) cfSearch();
 }
 /// Open the browser in update mode for one sourced pack row.
 async function cfOpenUpdate(row) {
@@ -657,10 +739,16 @@ function cfVersionChanged() {
     $("cf-add").disabled = !(cf.ready && cf.updateId && cf.versions.length);
     return;
   }
+  if (cfIsLocal()) {
+    const idIn = $("cf-id");
+    $("cf-add").disabled = !(cf.file && idIn && idIn.value.trim());
+    return;
+  }
   const idIn = $("cf-id");
   $("cf-add").disabled = !(cf.ready && cf.sel && cf.versions.length && idIn && idIn.value.trim());
 }
 async function cfAdd() {
+  if (cfIsLocal()) return cfUpload();
   if (!cf.versions.length) return;
   const v = cf.versions[Number($("cf-version").value) || 0];
   if (!v) return;

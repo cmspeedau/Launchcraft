@@ -347,6 +347,107 @@ pub async fn add(
 }
 
 #[derive(Debug, Deserialize)]
+pub struct UploadQuery {
+    /// launchcraft pack id for the registry.
+    pub id: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    /// Baked-tree archives carry no manifest, so name/version metadata
+    /// comes from these fields when the zip is a plain `minecraft/` tree.
+    #[serde(default)]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub game_version: Option<String>,
+}
+
+/// `POST /console/modpacks/upload` — the request body IS the modpack zip
+/// (a CurseForge zip, a `.mrpack`, or a baked `minecraft/` tree). Same
+/// import pipeline as the providers, minus the download step; the pack
+/// simply has no provenance, so there is no Update button for it.
+pub async fn upload(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(q): Query<UploadQuery>,
+    body: axum::body::Bytes,
+) -> Result<Json<Value>, ApiError> {
+    crate::console::auth(&state, &headers)?;
+    if body.is_empty() {
+        return Err(ApiError::bad_request("upload body is empty"));
+    }
+    crate::packs::validate_pack_id(&q.id).map_err(ApiError::from)?;
+    let mut registry = crate::packs::PackRegistry::load(&state.data_dir)?;
+    if registry.find(&q.id).is_some() {
+        return Err(ApiError::bad_request(format!(
+            "pack id already registered: {}",
+            q.id
+        )));
+    }
+    let pack_id = q.id.clone();
+
+    let root = state.data_dir.join("packs").join(&pack_id);
+    let src = root.join("src");
+    let dist = root.join("dist");
+    std::fs::create_dir_all(&dist)?;
+
+    // Only consulted if the archive turns out to be a manifest-less tree.
+    let meta = FallbackMeta {
+        name: q.title.clone().unwrap_or_else(|| q.id.clone()),
+        version: q.version.clone().unwrap_or_else(|| "1.0".into()),
+        game_version: q.game_version.clone().unwrap_or_default(),
+    };
+    let outcome = import_pack_zip(&state, body.to_vec(), &src, Some(meta)).await?;
+    let plan = outcome.plan;
+
+    let title = q
+        .title
+        .clone()
+        .filter(|t| !t.trim().is_empty())
+        .unwrap_or_else(|| plan.name.clone());
+    let mut config = launchcraft_builder::BuildConfig::load_or_default(None);
+    config.pack_id = pack_id.clone();
+    config.title = title.clone();
+    config.version = if plan.version.trim().is_empty() {
+        "1.0".into()
+    } else {
+        plan.version.clone()
+    };
+    if !plan.game_version.trim().is_empty() {
+        config.game_version = plan.game_version.clone();
+    }
+    std::fs::write(src.join("pack.json"), serde_json::to_vec_pretty(&config)?)?;
+
+    registry.add(crate::packs::PackEntry {
+        id: pack_id.clone(),
+        title,
+        src: Some(src.clone()),
+        dist: dist.clone(),
+        created_at: chrono::Utc::now().to_rfc3339(),
+        // A hand-supplied archive has no upstream to update from.
+        source: None,
+    })?;
+    registry.save(&state.data_dir)?;
+
+    let built = crate::console::run_pack_build(src, dist, pack_id.clone(), None).await?;
+
+    tracing::info!(
+        "imported uploaded pack '{pack_id}': {} file(s) in the tree",
+        outcome.fetched
+    );
+    Ok(Json(json!({
+        "id": pack_id,
+        "provider": "local",
+        "built": true,
+        "mods_fetched": outcome.fetched,
+        "warnings": outcome.warnings,
+        "game_version": plan.game_version,
+        "loader": plan.loader,
+        "pack_version": built["pack_version"],
+        "file_count": built["file_count"],
+        "total_bytes": built["total_bytes"],
+    })))
+}
+
+#[derive(Debug, Deserialize)]
 pub struct UpdateBody {
     /// Explicit target version; defaults to the project's newest.
     #[serde(default)]
