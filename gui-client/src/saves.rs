@@ -105,6 +105,8 @@ pub struct JobEvent {
     pub line: String,
     /// Marks the final line of a job; the UI re-enables its buttons on `done`.
     pub done: bool,
+    /// Completion fraction 0.0..=1.0 when the job can measure one.
+    pub progress: Option<f32>,
 }
 
 /// Zip one world (or all worlds, when `world_names` is empty) and upload the
@@ -247,7 +249,27 @@ async fn upload_archives(
 }
 
 pub(crate) fn report(tx: &Sender<JobEvent>, ctx: &egui::Context, line: String, done: bool) {
-    let _ = tx.send(JobEvent { line, done });
+    let _ = tx.send(JobEvent {
+        line,
+        done,
+        progress: None,
+    });
+    ctx.request_repaint();
+}
+
+/// Like [`report`], but also carries a completion fraction for the progress bar.
+pub(crate) fn report_progress(
+    tx: &Sender<JobEvent>,
+    ctx: &egui::Context,
+    line: String,
+    progress: Option<f32>,
+    done: bool,
+) {
+    let _ = tx.send(JobEvent {
+        line,
+        done,
+        progress,
+    });
     ctx.request_repaint();
 }
 

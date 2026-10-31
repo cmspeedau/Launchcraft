@@ -221,6 +221,10 @@ Phase 1: Workspace & Core Foundation (Done)
     configured pack server, shows per-pack state (not installed / installed /
     requires update) and installs or updates instances in the background via the
     real `SyncEngine`, recording a `RemoteSync` source in `instance.json`.
+  - Live progress bar during install/update/reinstall, driven by the `SyncEngine`
+    byte/file progress callbacks.
+  - Java settings list every runtime found on the machine (JAVA_HOME, `/usr/lib/jvm`,
+    SDKMAN, macOS/Windows trees) by parsed version — pick one or keep a custom path.
 - [x] **End-to-End Tests:**
   - Live HTTP round-trips using the real `WorldArchiver` and `BackupSyncClient`
     (upload → list → download → byte-identical restore), policy refusal, token gating,

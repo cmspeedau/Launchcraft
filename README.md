@@ -185,7 +185,11 @@ Point the launcher's **Pack server** (Home tab) at `http://localhost:9090`:
 the pack list is pulled automatically on start-up, shows each pack's
 install state (not installed / installed / requires update), and
 **Install** syncs the pack into `<instances>/<id>/` through
-`launchcraft-sync` in the background.
+`launchcraft-sync` in the background, with a live progress bar.
+
+The **Java Settings** tab lists every Java runtime it finds on the machine
+(JAVA_HOME, `/usr/lib/jvm`, SDKMAN, macOS/Windows install trees) with its
+parsed version — pick one from the list or type a custom path.
 
 ---
 

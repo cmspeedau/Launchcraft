@@ -74,6 +74,11 @@ pub struct App {
     packs_tx: Sender<Result<Vec<packs::PackInfo>, String>>,
     packs_rx: Receiver<Result<Vec<packs::PackInfo>, String>>,
     pending_pack_rescan: bool,
+    // Live fraction of the running install/update job (packs report one).
+    job_progress: Option<f32>,
+    // Installed Java runtimes found on this machine (Java tab dropdown).
+    java_versions: Vec<java::JavaInstall>,
+    java_scanned: bool,
     runtime: tokio::runtime::Runtime,
     ctx: egui::Context,
     events_tx: Sender<saves::JobEvent>,
@@ -114,6 +119,9 @@ impl App {
             packs_tx,
             packs_rx,
             pending_pack_rescan: false,
+            job_progress: None,
+            java_versions: Vec::new(),
+            java_scanned: false,
             paths,
             instances,
             runtime,
@@ -178,8 +186,12 @@ impl App {
         while let Ok(event) = self.events_rx.try_recv() {
             self.status = event.line.clone();
             self.push_log(event.line);
+            if let Some(frac) = event.progress {
+                self.job_progress = Some(frac);
+            }
             if event.done {
                 self.busy = false;
+                self.job_progress = None;
                 if self.pending_pack_rescan {
                     self.pending_pack_rescan = false;
                     self.instances = saves::list_instances(&self.paths.instances);
@@ -360,6 +372,24 @@ impl App {
                             self.set_status(format!("Installing '{}'…", pack.title));
                         }
                     });
+                    if self.busy {
+                        ui.add_space(12.0);
+                        match self.job_progress {
+                            Some(frac) => {
+                                ui.add(
+                                    egui::ProgressBar::new(frac)
+                                        .text(self.status.clone())
+                                        .desired_width(280.0),
+                                );
+                            }
+                            None => {
+                                ui.horizontal(|ui| {
+                                    ui.spinner();
+                                    ui.label(self.status.clone());
+                                });
+                            }
+                        }
+                    }
                 }
                 None => {
                     ui.add_space(20.0);
@@ -557,6 +587,28 @@ impl App {
     fn draw_java(&mut self, ui: &mut egui::Ui) {
         ui.heading("Java Settings");
         ui.separator();
+
+        // Detected-Java list: lazily scanned the first time the tab opens.
+        if !self.java_scanned {
+            self.java_versions = java::detect_all();
+            self.java_scanned = true;
+        }
+        if !self.java_versions.is_empty() {
+            ui.label("Detected Java runtimes:");
+            for install in &self.java_versions {
+                ui.selectable_value(
+                    &mut self.java.java_path,
+                    install.path.clone(),
+                    install.display(),
+                );
+            }
+            if ui.button("Rescan Java runtimes").clicked() {
+                self.java_versions = java::detect_all();
+            }
+            ui.label("Or type a custom executable path below.");
+            ui.separator();
+        }
+
         egui::Grid::new("java_grid")
             .num_columns(2)
             .spacing([12.0, 8.0])

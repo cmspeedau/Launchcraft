@@ -12,7 +12,7 @@ use launchcraft_sync::{CasStore, SyncEngine};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::saves::{report, JobEvent};
+use crate::saves::{report, report_progress, JobEvent};
 
 /// One row from the server's public `GET /packs` list.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -260,10 +260,11 @@ pub fn spawn_install(
 ) {
     rt.spawn(async move {
         match do_install(&paths, &server_url, &pack, &tx, &ctx).await {
-            Ok(version) => report(
+            Ok(version) => report_progress(
                 &tx,
                 &ctx,
                 format!("Installed '{}' v{version} into {}.", pack.title, pack.id),
+                Some(1.0),
                 true,
             ),
             Err(e) => report(
@@ -287,10 +288,11 @@ async fn do_install(
     prepare_instance(&instance_dir, pack)?;
     let repo_url = install_repo_url(server_url, &pack.id);
 
-    report(
+    report_progress(
         tx,
         ctx,
         format!("Fetching manifest for '{}'…", pack.id),
+        Some(0.0),
         false,
     );
     let engine = SyncEngine::new(Arc::new(CasStore::new(&paths.cas_cache)));
@@ -302,23 +304,31 @@ async fn do_install(
         .await
         .map_err(|e| e.to_string())?;
 
-    let total = manifest.files.len();
     let (tx2, ctx2) = (tx.clone(), ctx.clone());
+    let last_sent = std::sync::Mutex::new(-1.0f32);
     engine
         .synchronize(
             &repo_url,
             &instance_dir.join("minecraft"),
             &manifest,
             Some(Arc::new(move |p| {
-                let done = p.files_completed == p.files_total;
-                if done || p.files_completed % 25 == 0 {
-                    report(
+                let frac = sync_fraction(&p);
+                let done = p.files_total > 0 && p.files_completed == p.files_total;
+                let mut last = last_sent.lock().unwrap_or_else(|e| e.into_inner());
+                // Throttle: one event per ~0.5 % of progress, plus the final one.
+                if done || frac >= *last + 0.005 {
+                    *last = frac;
+                    report_progress(
                         &tx2,
                         &ctx2,
                         format!(
-                            "⬇ {}/{} files — {}",
-                            p.files_completed, p.files_total, p.current_operation
+                            "⬇ {:.0}% — {}/{} files — {}",
+                            frac * 100.0,
+                            p.files_completed,
+                            p.files_total,
+                            p.current_operation
                         ),
+                        Some(frac),
                         false,
                     );
                 }
@@ -328,8 +338,19 @@ async fn do_install(
         .map_err(|e| e.to_string())?;
 
     mark_installed(&instance_dir, &repo_url, pack, &manifest.pack_version)?;
-    let _ = total;
     Ok(manifest.pack_version)
+}
+
+/// Completion fraction of a `SyncEngine` progress report: bytes when the pack
+/// knows them (the usual case), falling back to a file count.
+fn sync_fraction(p: &launchcraft_sync::SyncProgress) -> f32 {
+    if p.bytes_total > 0 {
+        (p.bytes_downloaded as f64 / p.bytes_total as f64).min(1.0) as f32
+    } else if p.files_total > 0 {
+        (p.files_completed as f32 / p.files_total as f32).min(1.0)
+    } else {
+        0.0
+    }
 }
 
 #[cfg(test)]
