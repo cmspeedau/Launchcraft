@@ -44,6 +44,13 @@ Launchcraft is designed for speed, security, and portability. It replaces tradit
   - Scans modpack source trees, computes CAS blobs, and emits synchronized `manifest.json` distributions ready for S3 / CDN hosting.
 - **Dockerized CI/CD Toolchain:**
   - Ready-to-use container for automated modpack building in GitHub Actions or GitLab CI pipelines.
+- **Server Console (`launchcraft-server`):**
+  - Serves the backup endpoints the clients POST to, with BLAKE3 checksum storage,
+    server-side upload policy enforcement, and optional bearer-token auth.
+  - Embedded admin GUI (browser-based): dashboard, archive browser with download/delete,
+    upload-policy toggle, and a SKCraft-inspired **Pack Manager** — a pack registry with
+    New Pack (scaffold a source workspace), Add Existing, Modify, in-process Build
+    (runs the pack builder), and Check (verifies every CAS blob by BLAKE3).
 
 ---
 
@@ -61,7 +68,8 @@ Launchcraft/
 │   ├── launchcraft-runtime/     # JRE provisioning, process spawner, and JVM argument builder
 │   ├── launchcraft-auth/        # Microsoft OAuth, Xbox Live, and token management
 │   ├── launchcraft-backup/      # World backup zipping engine, server policy, and cloud sync
-│   └── launchcraft-builder/     # Headless CLI for scanning and building CAS modpacks
+│   ├── launchcraft-builder/     # Headless CLI for scanning and building CAS modpacks
+│   └── launchcraft-server/      # Backup API + embedded admin console for server ops
 ├── compose.yaml                 # Builder + local pack repository (port 8080) stack
 ├── docker/                      # repo-server static hosting config
 ├── Dockerfile                   # Multi-stage container for headless pack compilation
@@ -134,6 +142,102 @@ the builder → server → client round-trip is covered end-to-end by the
 workspace test suite. The same layout is ready for S3, nginx, or any static
 CDN — no path rewriting required.
 
+### Running the Server Console (Backups)
+
+`launchcraft-server` is the server-side counterpart of the backup engine:
+it accepts the world ZIP uploads clients push from their *World Saves* tab
+and serves an admin console for the operator.
+
+```bash
+# Native
+cargo run -p launchcraft-server
+# Or with Compose (persisted in ./server-data, console on port 9090)
+docker compose up -d backup-server
+```
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `LAUNCHCRAFT_ADDR` | `0.0.0.0:9090` | Listen address |
+| `LAUNCHCRAFT_DATA_DIR` | `./launchcraft-server-data` | Stores `backups/` + `policy.json` |
+| `LAUNCHCRAFT_BACKUP_TOKEN` | *(unset)* | When set, every data endpoint requires `Authorization: Bearer` |
+| `LAUNCHCRAFT_MAX_UPLOAD_MB` | `256` | Per-upload size cap |
+| `LAUNCHCRAFT_REPO_DIST` | *(unset)* | Built `./dist` dir auto-registered into the Pack Manager on first boot |
+| `LAUNCHCRAFT_CURSEFORGE_KEY` | *(unset)* | CurseForge Core API key; enables browsing CurseForge in the console |
+| `LAUNCHCRAFT_CURSEFORGE_URL` | `https://api.curseforge.com/v1` | CurseForge API root (override for mirrors/tests) |
+| `LAUNCHCRAFT_MODRINTH_URL` | `https://api.modrinth.com/v2` | Modrinth API root (keyless provider; override for mirrors/tests) |
+| `LAUNCHCRAFT_FTB_URL` | `https://dist.creeper.host/FTB2` | FTB legacy pack CDN root (keyless provider) |
+
+The launcher needs **one** URL for both jobs: enter `http://localhost:9090`
+as the **Server URL** (Home tab) and world backups go to
+`http://localhost:9090/api` automatically (the client contract is
+`POST /api/backups/upload?filename=…` /
+`GET /api/backups/download?filename=…`). Open
+`http://localhost:9090` for the console. Flipping the console's policy
+toggle makes the API answer `403` to uploads, which clients surface as
+"disabled by server policy".
+
+### Serving Packs to Launchers
+
+The same server also distributes built packs — publicly, exactly like a
+static nginx repo-server (the admin token never gates these routes):
+
+| Route | Purpose |
+| :--- | :--- |
+| `GET /packs` | Installable pack list shown by launcher clients |
+| `GET /packs/<id>/manifest.json` | `SyncEngine` manifest fetch |
+| `GET /packs/<id>/cas/objects/<shard>/<hash>` | CAS blobs |
+
+Enter that same **Server URL** in the launcher (Home tab): the pack list is
+pulled automatically on start-up, shows each pack's install state (not
+installed / installed / requires update), and **Install** syncs the pack into
+`<instances>/<id>/` through `launchcraft-sync` in the background, with a live
+progress bar. Saving the URL also re-points every instance's backup endpoint
+at `<url>/api`, so packs and backups always share one server.
+
+The **Java Settings** tab lists every Java runtime it finds on the machine
+(JAVA_HOME, `/usr/lib/jvm`, SDKMAN, macOS/Windows install trees) with its
+parsed version — pick one from the list or type a custom path.
+
+### Browsing & Adding Modpacks (CurseForge · Modrinth · FTB)
+
+In the console's **Pack Manager**, *Browse Modpacks…* opens one provider-aware
+browser (search, game-version filter, sort, version selector) over three
+modpack hosts:
+
+| Provider | Upstream | Key | Pack archive |
+| :--- | :--- | :--- | :--- |
+| CurseForge | `api.curseforge.com/v1` (proxied) | `LAUNCHCRAFT_CURSEFORGE_KEY` | `manifest.json` + referenced mods |
+| Modrinth | `api.modrinth.com/v2` | none needed | `.mrpack` with direct-download URLs |
+| FTB | legacy catalog on `dist.creeper.host/FTB2` | none needed | baked `minecraft/` zip tree |
+
+All of it is server-side: the browser never sees a key — the console calls
+*this* server, which calls the provider. **Add** downloads the chosen pack
+file and turns it into a launchcraft pack: resolving and fetching every
+referenced mod (CurseForge), downloading the manifest's direct URLs
+(Modrinth), or copying the baked tree wholesale (FTB), then merging the
+`overrides/`, registering, and building — a normal Pack Manager pack served
+to launchers exactly like a hand-built one. A missing **required** mod aborts
+the import; optional mods are skipped with a warning. The CurseForge key comes
+free from developers.curseforge.org; without it the provider list simply shows
+CurseForge as not configured.
+
+Imported packs keep their provenance (`{provider, project, file}`) in the
+registry, so the Pack Manager row gains an **Update** button: pick a newer
+version (default: the provider's newest) and the server re-downloads and
+re-imports it into the same workspace — manifest-based packs have mods the new
+version dropped **pruned**, baked FTB packs are wiped and replaced outright —
+re-applies the overrides and rebuilds; id and title are kept. Asking for the
+version already installed is a no-op. Packs you built by hand have no
+provenance and no update button.
+
+Custom packs get their own **Upload Modpack…** button next to the browser:
+pick any archive from your machine (CurseForge zip, `.mrpack`, or a baked
+`minecraft/` tree), name the pack, and it streams into the identical
+import-and-build pipeline — for baked trees the version/game-version fields
+fill in the metadata the archive itself doesn't carry. Size-capped by
+`LAUNCHCRAFT_MAX_UPLOAD_MB` like everything else; uploaded packs simply never
+offer an update, since there is no upstream feed.
+
 ---
 
 ## Quickstart & Local Development
@@ -169,6 +273,9 @@ cargo run -p launchcraft-builder -- --help
 
 # Run the desktop application
 cargo run -p launchcraft-desktop
+
+# Run the backup server with its admin console (http://localhost:9090)
+cargo run -p launchcraft-server
 ```
 
 ---

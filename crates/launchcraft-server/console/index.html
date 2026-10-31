@@ -1,0 +1,841 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Launchcraft Server</title>
+<style>
+:root {
+  --bg-primary: #121214;
+  --bg-secondary: #1a1a1e;
+  --bg-surface: #222228;
+  --accent: #10b981;
+  --accent-hover: #059669;
+  --danger: #ef4444;
+  --text-main: #f3f4f6;
+  --text-muted: #9ca3af;
+  --border: #2e2e38;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: var(--bg-primary); color: var(--text-main); display: flex; height: 100vh; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+aside { width: 220px; background: var(--bg-secondary); border-right: 1px solid var(--border); display: flex; flex-direction: column; padding: 1.25rem .75rem; flex-shrink: 0; }
+.brand { font-size: 1.15rem; font-weight: 700; color: #fff; margin-bottom: .35rem; display: flex; align-items: center; gap: .5rem; padding-left: .5rem; }
+.brand span { color: var(--accent); }
+.subtitle { font-size: .72rem; color: var(--text-muted); padding-left: .5rem; margin-bottom: 2rem; letter-spacing: .08em; text-transform: uppercase; }
+nav button { width: 100%; text-align: left; background: none; border: none; color: var(--text-muted); padding: .65rem .75rem; border-radius: 6px; cursor: pointer; font-size: .9rem; font-weight: 500; margin-bottom: .35rem; transition: all .15s; }
+nav button:hover { background: var(--bg-surface); color: #fff; }
+nav button.active { background: var(--accent); color: #fff; }
+.token-box { margin-top: auto; border-top: 1px solid var(--border); padding-top: .9rem; }
+.token-box label { display: block; font-size: .7rem; color: var(--text-muted); margin: 0 0 .35rem .5rem; text-transform: uppercase; letter-spacing: .06em; }
+.token-box input { width: 100%; background: var(--bg-primary); border: 1px solid var(--border); color: var(--text-main); border-radius: 6px; padding: .45rem .6rem; font-size: .8rem; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+.token-box input:focus { outline: none; border-color: var(--accent); }
+main { flex: 1; display: flex; flex-direction: column; overflow-y: auto; padding: 1.5rem; }
+.header-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; }
+.header-title { font-size: 1.35rem; font-weight: 600; }
+.status-line { font-size: .8rem; color: var(--text-muted); }
+.status-line.err { color: var(--danger); }
+.view { display: none; }
+.view.active { display: block; }
+.card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 1rem; margin-bottom: 1.25rem; }
+.card { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; }
+.card-label { font-size: .72rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: .08em; margin-bottom: .5rem; }
+.card-value { font-size: 1.6rem; font-weight: 700; font-family: ui-monospace, "SF Mono", Menlo, monospace; color: var(--accent); word-break: break-all; }
+.card-value.small { font-size: .95rem; color: var(--text-main); }
+table.file-table { width: 100%; border-collapse: collapse; background: var(--bg-secondary); border-radius: 8px; overflow: hidden; border: 1px solid var(--border); }
+.file-table th, .file-table td { padding: .7rem .9rem; text-align: left; font-size: .85rem; border-bottom: 1px solid var(--border); }
+.file-table th { background: var(--bg-surface); color: var(--text-muted); font-weight: 600; font-size: .75rem; text-transform: uppercase; letter-spacing: .05em; }
+.file-table tr:last-child td { border-bottom: none; }
+.mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: .8rem; }
+.dim { color: var(--text-muted); }
+.btn { background: var(--bg-surface); color: #fff; border: 1px solid var(--border); padding: .45rem .85rem; border-radius: 6px; cursor: pointer; font-size: .85rem; font-weight: 500; display: inline-flex; align-items: center; gap: .4rem; }
+.btn:hover { background: var(--border); }
+.btn-primary { background: var(--accent); border-color: var(--accent); }
+.btn-primary:hover { background: var(--accent-hover); }
+.btn-danger:hover { background: var(--danger); border-color: var(--danger); }
+.action-group { display: flex; gap: .5rem; }
+.badge { font-size: .75rem; padding: .2rem .55rem; border-radius: 4px; font-weight: 600; display: inline-block; }
+.badge-success { background: #064e3b; color: #34d399; }
+.badge-disabled { background: #451a1a; color: #f87171; }
+.badge-neutral { background: var(--bg-surface); color: var(--text-muted); }
+.form-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: .75rem; }
+.form-grid label { display: block; font-size: .7rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: .06em; margin-bottom: .3rem; }
+.field-input { width: 100%; background: var(--bg-primary); border: 1px solid var(--border); color: var(--text-main); border-radius: 6px; padding: .45rem .6rem; font-size: .85rem; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+.field-input:focus { outline: none; border-color: var(--accent); }
+.row-actions .btn { padding: .3rem .55rem; font-size: .75rem; }
+.policy-row { display: flex; align-items: center; gap: 1rem; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem 1.5rem; }
+.switch { position: relative; width: 52px; height: 28px; flex-shrink: 0; }
+.switch input { opacity: 0; width: 0; height: 0; }
+.slider { position: absolute; inset: 0; background: var(--bg-surface); border: 1px solid var(--border); border-radius: 999px; cursor: pointer; transition: .15s; }
+.slider::before { content: ""; position: absolute; width: 20px; height: 20px; left: 3px; top: 3px; background: var(--text-muted); border-radius: 50%; transition: .15s; }
+.switch input:checked + .slider { background: var(--accent); border-color: var(--accent); }
+.switch input:checked + .slider::before { transform: translateX(24px); background: #fff; }
+.empty { padding: 2.5rem; text-align: center; color: var(--text-muted); background: var(--bg-secondary); border: 1px dashed var(--border); border-radius: 8px; }
+/* CurseForge browser overlay (Add from CurseForge). */
+.cf-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.72); display: flex; align-items: center; justify-content: center; z-index: 50; }
+.cf-modal { width: min(980px, 94vw); height: min(660px, 90vh); background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 10px; display: flex; flex-direction: column; padding: 1rem 1.25rem .9rem; }
+.cf-header { display: flex; align-items: center; gap: .75rem; }
+.cf-title { font-size: 1.3rem; font-weight: 700; }
+.cf-close { margin-left: auto; }
+.cf-note { font-style: italic; color: var(--text-muted); font-size: .82rem; text-align: center; margin: .55rem 0 .7rem; }
+.cf-search-row { display: flex; gap: .5rem; align-items: center; }
+.cf-search-row input { font-family: inherit; }
+.cf-drop { flex: 1; display: flex; align-items: center; gap: .5rem; padding: .9rem; border: 1px dashed var(--border); border-radius: 6px; background: var(--bg-primary); }
+.up-modal { width: min(560px, 94vw); height: auto; }
+.cf-filters { display: flex; gap: .5rem; margin-top: .5rem; align-items: center; font-size: .8rem; color: var(--text-muted); }
+.cf-filters input { width: 150px; }
+.cf-body { flex: 1; display: flex; gap: 1rem; margin-top: .75rem; min-height: 0; }
+.cf-list { width: 46%; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-primary); }
+.cf-item { display: flex; gap: .6rem; padding: .5rem .6rem; cursor: pointer; border-bottom: 1px solid var(--border); align-items: center; }
+.cf-item:hover { background: var(--bg-surface); }
+.cf-item.sel { background: var(--bg-surface); box-shadow: inset 3px 0 0 var(--accent); }
+.cf-item img { width: 46px; height: 46px; object-fit: cover; border-radius: 4px; background: var(--bg-surface); flex-shrink: 0; }
+.cf-item .meta { min-width: 0; }
+.cf-item .t { font-weight: 600; font-size: .9rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cf-item .d { color: var(--text-muted); font-size: .78rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cf-detail { flex: 1; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-primary); padding: 1rem; }
+.cf-detail .big { display: flex; gap: .9rem; align-items: center; margin-bottom: .6rem; }
+.cf-detail .big img { width: 64px; height: 64px; border-radius: 6px; background: var(--bg-surface); flex-shrink: 0; }
+.cf-detail .name { font-weight: 700; font-size: 1.05rem; }
+.cf-detail .form-grid { margin-top: .9rem; }
+.cf-footer { display: flex; align-items: center; gap: .75rem; margin-top: .9rem; }
+.cf-footer-right { margin-left: auto; display: flex; align-items: center; gap: .6rem; }
+.cf-verlabel { color: var(--text-muted); font-size: .85rem; }
+.cf-sort { width: auto; }
+.cf-version { min-width: 250px; font-family: inherit; }
+.cf-status { min-height: 1.2em; font-size: .82rem; color: var(--text-muted); margin-top: .35rem; }
+.cf-status.err { color: #f87171; }
+</style>
+</head>
+<body>
+
+<aside>
+  <div class="brand">Launch<span>craft</span></div>
+  <div class="subtitle">Server Console</div>
+  <nav>
+    <button data-view="dashboard" class="active">Dashboard</button>
+    <button data-view="backups">Backups</button>
+    <button data-view="policy">Policy</button>
+    <button data-view="packs">Pack Manager</button>
+  </nav>
+  <div class="token-box">
+    <label for="token">Bearer token</label>
+    <input id="token" type="password" placeholder="leave empty if open">
+  </div>
+</aside>
+
+<main>
+  <div class="header-bar">
+    <div class="header-title" id="view-title">Dashboard</div>
+    <div class="status-line" id="status">Ready</div>
+  </div>
+
+  <section class="view active" id="view-dashboard">
+    <div class="card-grid">
+      <div class="card"><div class="card-label">Archives</div><div class="card-value" id="st-count">–</div></div>
+      <div class="card"><div class="card-label">Stored</div><div class="card-value" id="st-bytes">–</div></div>
+      <div class="card"><div class="card-label">Upload policy</div><div class="card-value" id="st-policy">–</div></div>
+      <div class="card"><div class="card-label">Newest archive</div><div class="card-value small" id="st-newest">–</div></div>
+    </div>
+    <div id="worlds-table"></div>
+  </section>
+
+  <section class="view" id="view-backups">
+    <div class="header-bar">
+      <div></div>
+      <button class="btn" id="btn-refresh">Refresh</button>
+    </div>
+    <div id="backups-table"></div>
+  </section>
+
+  <section class="view" id="view-policy">
+    <div class="policy-row">
+      <label class="switch">
+        <input type="checkbox" id="policy-toggle">
+        <span class="slider"></span>
+      </label>
+      <div>
+        <strong>Accept cloud uploads</strong>
+        <div class="dim" style="font-size:.85rem;margin-top:.25rem">
+          Mirrors <span class="mono">server_backups_enabled</span>. While off, the API answers
+          <span class="mono">403</span> to <span class="mono">POST /api/backups/upload</span> and clients skip uploads by policy.
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="view" id="view-packs">
+    <div class="header-bar">
+      <div></div>
+      <div class="action-group">
+        <button class="btn btn-primary" id="pack-new">+ New Pack</button>
+        <button class="btn" id="pack-add">Add Existing</button>
+        <button class="btn" id="pack-curse" title="Browse CurseForge, Modrinth and FTB and import a modpack">Browse Modpacks…</button>
+        <button class="btn" id="pack-upload" title="Import a modpack zip from this computer">Upload Modpack…</button>
+        <button class="btn" id="pack-refresh">Refresh</button>
+      </div>
+    </div>
+    <div id="pack-form" class="card" style="display:none;margin-bottom:1.25rem">
+      <div class="card-label" id="pack-form-title">New Pack</div>
+      <div class="form-grid">
+        <div><label for="pf-id">Name (id)</label><input id="pf-id" class="field-input" placeholder="alice-1.7"></div>
+        <div><label for="pf-title">Title</label><input id="pf-title" class="field-input" placeholder="Alice 1.7"></div>
+        <div><label for="pf-game">Game version</label><input id="pf-game" class="field-input" placeholder="1.21.4"></div>
+        <div><label for="pf-src">Source dir (server path)</label><input id="pf-src" class="field-input" placeholder="/srv/packs/alice/src"></div>
+        <div><label for="pf-dist">Dist dir (server path)</label><input id="pf-dist" class="field-input" placeholder="/srv/packs/alice/dist"></div>
+      </div>
+      <div class="action-group" style="margin-top:.9rem">
+        <button class="btn btn-primary" id="pf-save">Save</button>
+        <button class="btn" id="pf-cancel">Cancel</button>
+      </div>
+    </div>
+    <div id="packs-body"><div class="empty">No pack data.</div></div>
+  </section>
+</main>
+
+<!-- Modpack browser: CurseForge + Modrinth + FTB (opens from Pack Manager). -->
+<div class="cf-overlay" id="cf-overlay" style="display:none">
+  <div class="cf-modal">
+    <div class="cf-header">
+      <span class="cf-title">Modpack Browser</span>
+      <button class="btn cf-close" id="cf-close">✕ Close</button>
+    </div>
+    <p class="cf-note">Browsing CurseForge, Modrinth and FTB. CurseForge needs a server-side
+      LAUNCHCRAFT_CURSEFORGE_KEY, and its creators can block third-party tools, so a few packs
+      may need manual mod downloads.</p>
+    <div class="cf-search-row">
+      <select class="field-input" id="cf-provider" style="width:auto"></select>
+      <button class="btn" id="cf-filter">Filter options</button>
+      <input class="field-input" id="cf-search" placeholder="Search and filter…" style="flex:1">
+    </div>
+    <div class="cf-filters" id="cf-filters" style="display:none">
+      <span>Game version</span>
+      <input class="field-input" id="cf-game" placeholder="e.g. 1.20.4">
+    </div>
+    <div class="cf-body">
+      <div class="cf-list" id="cf-list"><div class="empty" style="border:none">Search to list modpacks.</div></div>
+      <div class="cf-detail" id="cf-detail"><div class="empty" style="border:none;background:transparent">Select a modpack to see its versions.</div></div>
+    </div>
+    <div class="cf-footer">
+      <select class="field-input cf-sort" id="cf-sort">
+        <option value="featured">Sort by Featured</option>
+        <option value="popularity">Sort by Popularity</option>
+        <option value="lastupdated">Sort by Last Updated</option>
+        <option value="name">Sort by Name</option>
+      </select>
+      <button class="btn" id="cf-more" style="display:none">Load more</button>
+      <div class="cf-footer-right">
+        <span class="cf-verlabel" id="cf-verlabel">Version selected:</span>
+        <select class="field-input cf-version" id="cf-version"></select>
+        <button class="btn btn-primary" id="cf-add" disabled>＋ Add</button>
+      </div>
+    </div>
+    <div class="cf-status" id="cf-status"></div>
+  </div>
+</div>
+
+<!-- Custom modpack upload: zip → import → build (opens from Pack Manager). -->
+<div class="cf-overlay" id="up-overlay" style="display:none">
+  <div class="cf-modal up-modal">
+    <div class="cf-header">
+      <span class="cf-title">Upload Modpack</span>
+      <button class="btn cf-close" id="up-close">✕ Close</button>
+    </div>
+    <p class="cf-note">Any archive this server can import: CurseForge zip (manifest.json),
+      Modrinth .mrpack, or a baked tree (minecraft/…). Referenced mods are fetched,
+      overrides merged, and the pack is built — no upstream feed, so no Update button.</p>
+    <div class="cf-drop"><input type="file" id="up-file" accept=".zip,.mrpack"></div>
+    <div class="cf-status" id="up-fileinfo"></div>
+    <div class="form-grid" style="margin-top:.4rem">
+      <div><label>Pack id (registry)</label><input class="field-input" id="up-id" placeholder="e.g. my-pack"></div>
+      <div><label>Title</label><input class="field-input" id="up-title"></div>
+      <div><label>Version (optional — baked trees)</label><input class="field-input" id="up-version" placeholder="1.0"></div>
+      <div><label>Game version (optional)</label><input class="field-input" id="up-game" placeholder="e.g. 1.20.1"></div>
+    </div>
+    <div class="cf-footer">
+      <div class="cf-status" id="up-status"></div>
+      <div class="cf-footer-right">
+        <button class="btn btn-primary" id="up-go" disabled>⇪ Upload</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const tokenEl = $("token");
+tokenEl.value = localStorage.getItem("lc_token") || "";
+tokenEl.addEventListener("input", () => {
+  localStorage.setItem("lc_token", tokenEl.value);
+  loadCurrent();
+});
+
+function headers() {
+  const t = tokenEl.value.trim();
+  return t ? { Authorization: "Bearer " + t } : {};
+}
+function status(msg, isErr) {
+  const el = $("status");
+  el.textContent = msg;
+  el.className = "status-line" + (isErr ? " err" : "");
+}
+function humanSize(n) {
+  if (!Number.isFinite(n)) return "–";
+  const u = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return (i === 0 ? n : n.toFixed(1)) + " " + u[i];
+}
+async function getJSON(url, opts = {}) {
+  const res = await fetch(url, { ...opts, headers: { ...headers(), ...(opts.headers || {}) } });
+  if (!res.ok) {
+    let msg = res.status + " " + res.statusText;
+    try { msg += " — " + (await res.json()).message; } catch {}
+    throw new Error(msg);
+  }
+  return res.status === 204 ? null : res.json().catch(() => ({}));
+}
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+
+async function loadDashboard() {
+  const [s, list] = await Promise.all([getJSON("/console/stats"), getJSON("/api/backups")]);
+  $("st-count").textContent = s.archive_count;
+  $("st-bytes").textContent = humanSize(s.total_bytes);
+  $("st-newest").textContent = s.newest || "none";
+  const on = list.server_backups_enabled;
+  $("st-policy").innerHTML = "";
+  $("st-policy").appendChild(el("span", "badge " + (on ? "badge-success" : "badge-disabled"), on ? "enabled" : "disabled"));
+  const box = $("worlds-table");
+  box.innerHTML = "";
+  if (!s.worlds.length) { box.appendChild(el("div", "empty", "No worlds have uploaded yet.")); return; }
+  const t = el("table", "file-table");
+  const head = el("tr"); head.appendChild(el("th", null, "World")); head.appendChild(el("th", null, "Archives"));
+  t.appendChild(head);
+  for (const w of s.worlds) {
+    const tr = el("tr");
+    tr.appendChild(el("td", null, w.world));
+    tr.appendChild(el("td", "mono", w.count));
+    t.appendChild(tr);
+  }
+  box.appendChild(t);
+}
+
+async function loadBackups() {
+  const list = await getJSON("/api/backups");
+  const box = $("backups-table");
+  box.innerHTML = "";
+  if (!list.backups.length) { box.appendChild(el("div", "empty", "No backups uploaded yet — the client's World Saves tab pushes them here.")); return; }
+  const t = el("table", "file-table");
+  const head = el("tr");
+  for (const h of ["Archive", "World", "Size", "Uploaded", "BLAKE3", ""]) head.appendChild(el("th", null, h));
+  t.appendChild(head);
+  for (const b of list.backups) {
+    const tr = el("tr");
+    tr.appendChild(el("td", "mono", b.file_name));
+    tr.appendChild(el("td", null, b.world_name));
+    tr.appendChild(el("td", "mono", humanSize(b.size_bytes)));
+    tr.appendChild(el("td", "dim", b.timestamp.slice(0, 19).replace("T", " ")));
+    tr.appendChild(el("td", "mono dim", b.checksum_blake3.slice(0, 10)));
+    const td = el("td");
+    const group = el("div", "action-group");
+    const dl = el("button", "btn", "Download");
+    dl.onclick = () => download(b.file_name);
+    const del = el("button", "btn btn-danger", "Delete");
+    del.onclick = () => remove(b.file_name);
+    group.appendChild(dl); group.appendChild(del);
+    td.appendChild(group);
+    tr.appendChild(td);
+    t.appendChild(tr);
+  }
+  box.appendChild(t);
+}
+
+async function download(name) {
+  try {
+    const res = await fetch("/api/backups/download?filename=" + encodeURIComponent(name), { headers: headers() });
+    if (!res.ok) throw new Error(res.status + " " + res.statusText);
+    const url = URL.createObjectURL(await res.blob());
+    const a = el("a"); a.href = url; a.download = name; a.click();
+    URL.revokeObjectURL(url);
+    status("Downloaded " + name);
+  } catch (e) { status("Download failed: " + e.message, true); }
+}
+
+async function remove(name) {
+  if (!confirm("Delete " + name + " from the server?")) return;
+  try {
+    await getJSON("/api/backups/" + encodeURIComponent(name), { method: "DELETE" });
+    status("Deleted " + name);
+    loadCurrent();
+  } catch (e) { status("Delete failed: " + e.message, true); }
+}
+
+async function loadPolicy() {
+  const p = await getJSON("/console/policy");
+  $("policy-toggle").checked = p.server_backups_enabled;
+}
+$("policy-toggle").addEventListener("change", async (ev) => {
+  try {
+    await getJSON("/console/policy", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ server_backups_enabled: ev.target.checked }),
+    });
+    status("Upload policy set to " + (ev.target.checked ? "enabled" : "disabled"));
+  } catch (e) {
+    ev.target.checked = !ev.target.checked;
+    status("Policy update failed: " + e.message, true);
+  }
+});
+
+async function loadPacks() {
+  const box = $("packs-body");
+  box.innerHTML = "";
+  const data = await getJSON("/console/packs");
+  if (!data.packs.length) {
+    box.appendChild(el("div", "empty", "No packs registered. Create one with New Pack, or register a built directory with Add Existing."));
+    return;
+  }
+  const t = el("table", "file-table");
+  const head = el("tr");
+  for (const h of ["Name", "Title", "Game", "Version", "Files", "Location", "Status", ""]) head.appendChild(el("th", null, h));
+  t.appendChild(head);
+  for (const p of data.packs) {
+    const tr = el("tr");
+    tr.appendChild(el("td", "mono", p.id));
+    tr.appendChild(el("td", null, p.title));
+    tr.appendChild(el("td", "mono", p.game_version || "–"));
+    tr.appendChild(el("td", "mono", p.pack_version || "–"));
+    tr.appendChild(el("td", "mono", p.status === "ok" ? p.file_count + " · " + humanSize(p.total_bytes) : "–"));
+    tr.appendChild(el("td", "mono dim", p.dist));
+    const st = el("td");
+    const cls = { ok: "badge-success", "not-built": "badge-neutral", error: "badge-disabled" }[p.status] || "badge-neutral";
+    st.appendChild(el("span", "badge " + cls, p.error ? "error" : p.status));
+    tr.appendChild(st);
+    const td = el("td");
+    const group = el("div", "action-group row-actions");
+    const mk = (label, cls, fn) => { const b = el("button", "btn " + cls, label); b.onclick = fn; return b; };
+    group.appendChild(mk("Modify", "", () => openPackForm("modify", p)));
+    group.appendChild(mk("Check", "", () => packAction(p.id, "check")));
+    group.appendChild(mk("Build", "", () => packAction(p.id, "build")));
+    if (p.source) group.appendChild(mk("Update", "", () => cfOpenUpdate(p)));
+    group.appendChild(mk("Remove", "btn-danger", () => packAction(p.id, "remove")));
+    td.appendChild(group);
+    tr.appendChild(td);
+    t.appendChild(tr);
+  }
+  box.appendChild(t);
+}
+
+function openPackForm(mode, row) {
+  packFormMode = mode;
+  packFormId = mode === "modify" ? row.id : null;
+  const titles = { new: "New Pack", add: "Add Existing", modify: "Modify Pack" };
+  $("pack-form-title").textContent = titles[mode];
+  $("pf-id").value = mode === "modify" ? row.id : "";
+  $("pf-id").disabled = mode === "modify";
+  $("pf-title").value = mode === "modify" ? row.title : "";
+  $("pf-game").value = "";
+  $("pf-game").closest("div").style.display = mode === "add" ? "none" : "";
+  $("pf-src").value = mode === "modify" ? (row.src || "") : "";
+  $("pf-src").closest("div").style.display = mode === "new" ? "none" : "";
+  $("pf-dist").value = mode === "modify" ? row.dist : "";
+  $("pf-dist").closest("div").style.display = mode === "new" ? "none" : "";
+  $("pack-form").style.display = "block";
+}
+function closePackForm() {
+  packFormMode = null;
+  $("pack-form").style.display = "none";
+}
+
+async function submitPackForm() {
+  if (!packFormMode) return;
+  const id = $("pf-id").value.trim();
+  const title = $("pf-title").value.trim() || id;
+  try {
+    if (packFormMode === "new") {
+      await getJSON("/console/packs/new", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, title, game_version: $("pf-game").value.trim() || null }) });
+      status("Created pack " + id + " — drop mods/configs into its source dir, then Build");
+    } else if (packFormMode === "add") {
+      await getJSON("/console/packs", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, title, src: $("pf-src").value.trim() || null, dist: $("pf-dist").value.trim() }) });
+      status("Registered pack " + id);
+    } else {
+      await getJSON("/console/packs/" + encodeURIComponent(packFormId), { method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title, src: $("pf-src").value.trim() || null, dist: $("pf-dist").value.trim() || null }) });
+      status("Updated pack " + packFormId);
+    }
+    closePackForm();
+    loadCurrent();
+  } catch (e) { status("Save failed: " + e.message, true); }
+}
+
+async function packAction(id, action) {
+  if (action === "remove" && !confirm("Unregister " + id + "? Files on disk are kept.")) return;
+  try {
+    if (action === "check") {
+      status("Checking " + id + "…");
+      const r = await getJSON("/console/packs/" + encodeURIComponent(id) + "/check", { method: "POST" });
+      status(r.ok
+        ? "✓ " + id + ": all " + r.files + " files verified (BLAKE3)"
+        : "✗ " + id + ": " + (r.error || (r.missing + " missing blob(s), " + r.hash_mismatch + " hash mismatch(es)") + " — " + (r.problems[0] || "")), !r.ok);
+    } else if (action === "build") {
+      status("Building " + id + "…");
+      const r = await getJSON("/console/packs/" + encodeURIComponent(id) + "/build", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      status("Built " + id + " v" + r.pack_version + " — " + r.file_count + " files, " + humanSize(r.total_bytes));
+      loadCurrent();
+    } else {
+      await getJSON("/console/packs/" + encodeURIComponent(id), { method: "DELETE" });
+      status("Unregistered " + id);
+      loadCurrent();
+    }
+  } catch (e) { status(action + " failed: " + e.message, true); loadCurrent(); }
+}
+
+let packFormMode = null, packFormId = null;
+
+// ---------- Modpack browser (CurseForge / Modrinth / FTB) ----------
+const cf = { providers: [], packs: [], total: 0, page: 0, sel: null, versions: [],
+             ready: null, mode: "add", updateId: null, updateProvider: null, currentFile: null };
+function cfStatus(msg, isErr) {
+  const el = $("cf-status");
+  el.textContent = msg;
+  el.className = "cf-status" + (isErr ? " err" : "");
+}
+function slugify(name) {
+  const s = (name || "").toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-").replace(/^[.-]+/, "").slice(0, 40);
+  return s || "modpack";
+}
+function cfProviderLabel(id) {
+  const p = cf.providers.find((x) => x.id === id);
+  return p ? p.name : id;
+}
+/// "add" browses the selected provider; "update" re-imports one sourced pack.
+function cfSetMode(mode, row) {
+  cf.mode = mode;
+  cf.updateId = mode === "update" ? row.id : null;
+  cf.updateProvider = mode === "update" ? row.source.provider : null;
+  cf.currentFile = mode === "update" ? row.source.file : null;
+  const up = mode === "update";
+  document.querySelector(".cf-search-row").style.display = up ? "none" : "flex";
+  $("cf-filters").style.display = "none";
+  document.querySelector(".cf-sort").style.display = up ? "none" : "";
+  $("cf-more").style.display = "none";
+  $("cf-verlabel").textContent = up ? "Update to:" : "Version selected:";
+  $("cf-add").textContent = up ? "⟳ Update" : "＋ Add";
+}
+/// Provider for the current mode: the picker while adding, the source when updating.
+function cfProvider() {
+  return cf.mode === "update" ? cf.updateProvider : $("cf-provider").value;
+}
+async function cfReady() {
+  if (cf.ready === null) {
+    try {
+      const data = await getJSON("/console/modpacks");
+      cf.providers = data.providers;
+      cf.ready = true;
+      const sel = $("cf-provider");
+      sel.innerHTML = "";
+      for (const p of cf.providers) {
+        const o = el("option");
+        o.value = p.id;
+        o.textContent = p.configured ? p.name : p.name + " (not configured)";
+        if (p.hint) o.title = p.hint;
+        sel.appendChild(o);
+      }
+      sel.value = cf.providers[0].id;
+    } catch (e) { cf.ready = false; cfStatus(e.message, true); }
+  }
+  return cf.ready;
+}
+async function cfSearch(reset = true) {
+  if (!(await cfReady())) return;
+  if (reset) { cf.packs = []; cf.page = 0; } else cf.page += 1;
+  const p = new URLSearchParams();
+  p.set("provider", $("cf-provider").value);
+  const q = $("cf-search").value.trim();
+  const gv = $("cf-game").value.trim();
+  if (q) p.set("q", q);
+  if (gv) p.set("game_version", gv);
+  p.set("sort", $("cf-sort").value);
+  p.set("index", cf.page);
+  cfStatus("Searching " + cfProviderLabel(p.get("provider")) + "…");
+  try {
+    const data = await getJSON("/console/modpacks/search?" + p);
+    cf.packs = cf.packs.concat(data.packs);
+    cf.total = data.total;
+    cfRenderList();
+    cfStatus(cf.packs.length ? cf.packs.length + " of " + data.total + " modpack(s)" : "No modpacks found.");
+  } catch (e) { cfStatus("Search failed: " + e.message, true); }
+}
+function cfRenderList() {
+  const box = $("cf-list");
+  box.innerHTML = "";
+  cf.packs.forEach((pack, i) => {
+    const row = el("div", "cf-item" + (cf.sel && cf.sel.id === pack.id ? " sel" : ""));
+    if (pack.icon) {
+      const img = el("img"); img.src = pack.icon; img.referrerPolicy = "no-referrer";
+      img.onerror = () => img.remove();
+      row.appendChild(img);
+    }
+    const meta = el("div", "meta");
+    meta.appendChild(el("div", "t", pack.name));
+    meta.appendChild(el("div", "d", pack.description));
+    row.appendChild(meta);
+    row.onclick = () => cfSelect(i);
+    box.appendChild(row);
+  });
+  $("cf-more").style.display = cf.packs.length && cf.packs.length < cf.total ? "" : "none";
+}
+async function cfOpen() {
+  $("cf-overlay").style.display = "flex";
+  cfSetMode("add", null);
+  if (!(await cfReady())) return;
+  if (!cf.packs.length) cfSearch();
+}
+/// Open the browser in update mode for one sourced pack row.
+async function cfOpenUpdate(row) {
+  $("cf-overlay").style.display = "flex";
+  cfSetMode("update", row);
+  cf.sel = null;
+  cf.versions = [];
+  if (!(await cfReady())) return;
+  const label = cfProviderLabel(row.source.provider);
+  const lst = $("cf-list");
+  lst.innerHTML = "";
+  const info = el("div", "empty",
+    "This pack was imported from " + label + ".\nPick a version to re-import it into the same workspace.");
+  info.style.border = "none";
+  lst.appendChild(info);
+  const box = $("cf-detail");
+  box.innerHTML = "";
+  box.appendChild(el("div", "name", row.title || row.id));
+  box.appendChild(el("div", "dim", "Pack '" + row.id + "' · " + label + " project "
+    + row.source.project + " · currently on " + row.source.file));
+  box.appendChild(el("div", null,
+    "An update re-downloads the pack, rebuilds its file set (dropping files the new version no longer uses), "
+    + "re-applies the pack's overrides and rebuilds it. Your pack id and title are kept."));
+  cfStatus("");
+  await cfLoadVersions(row.source.project);
+}
+/// Fill the footer version picker for a project; shared by both modes.
+async function cfLoadVersions(project) {
+  $("cf-add").disabled = true;
+  const sel = $("cf-version");
+  sel.innerHTML = "";
+  const loading = el("option"); loading.textContent = "Loading versions…"; sel.appendChild(loading);
+  try {
+    const q = new URLSearchParams({ provider: cfProvider(), project: String(project) });
+    const data = await getJSON("/console/modpacks/versions?" + q);
+    cf.versions = data.versions;
+    sel.innerHTML = "";
+    cf.versions.forEach((v, vi) => {
+      const o = el("option");
+      o.value = String(vi);
+      const shown = [v.name || String(v.id), (v.game_versions || []).slice(0, 2).join(" "),
+                     v.size ? humanSize(v.size) : ""].filter(Boolean).join(" · ");
+      o.textContent = shown + (String(v.id) === String(cf.currentFile) ? " · (installed)" : "");
+      sel.appendChild(o);
+    });
+    if (!cf.versions.length) {
+      const none = el("option"); none.textContent = "No files"; sel.appendChild(none);
+    }
+    cfVersionChanged();
+  } catch (e) {
+    sel.innerHTML = "";
+    const err = el("option"); err.textContent = "Versions failed: " + e.message;
+    sel.appendChild(err);
+  }
+}
+async function cfSelect(i) {
+  cf.sel = cf.packs[i];
+  cfRenderList();
+  const box = $("cf-detail");
+  box.innerHTML = "";
+  const big = el("div", "big");
+  if (cf.sel.icon) {
+    const img = el("img"); img.src = cf.sel.icon; img.referrerPolicy = "no-referrer";
+    big.appendChild(img);
+  }
+  const head = el("div");
+  head.appendChild(el("div", "name", cf.sel.name));
+  head.appendChild(el("div", "dim", cf.sel.downloads
+    ? cf.sel.downloads.toLocaleString() + " downloads"
+    : cfProviderLabel($("cf-provider").value)));
+  big.appendChild(head);
+  box.appendChild(big);
+  box.appendChild(el("div", null, cf.sel.description || ""));
+  const grid = el("div", "form-grid");
+  const d1 = el("div"); d1.appendChild(el("label", null, "Pack id (registry)"));
+  const idIn = el("input", "field-input"); idIn.id = "cf-id"; idIn.value = slugify(cf.sel.name);
+  d1.appendChild(idIn);
+  const d2 = el("div"); d2.appendChild(el("label", null, "Title"));
+  const tIn = el("input", "field-input"); tIn.id = "cf-title"; tIn.value = cf.sel.name;
+  d2.appendChild(tIn);
+  grid.appendChild(d1); grid.appendChild(d2);
+  box.appendChild(grid);
+  await cfLoadVersions(cf.sel.id);
+}
+function cfVersionChanged() {
+  if (cf.mode === "update") {
+    $("cf-add").disabled = !(cf.ready && cf.updateId && cf.versions.length);
+    return;
+  }
+  const idIn = $("cf-id");
+  $("cf-add").disabled = !(cf.ready && cf.sel && cf.versions.length && idIn && idIn.value.trim());
+}
+async function cfAdd() {
+  if (!cf.versions.length) return;
+  const v = cf.versions[Number($("cf-version").value) || 0];
+  if (!v) return;
+  if (cf.mode === "update") return cfRunUpdate(v);
+  if (!cf.sel) return;
+  const id = ($("cf-id") ? $("cf-id").value : "").trim();
+  const title = ($("cf-title") ? $("cf-title").value : "").trim() || cf.sel.name;
+  if (!id) { cfStatus("Pick a pack id first.", true); return; }
+  $("cf-add").disabled = true;
+  cfStatus("Downloading '" + v.name + "' and every mod file, then building… (large packs take a while)");
+  try {
+    const r = await getJSON("/console/modpacks/add", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        provider: cfProvider(), project: String(cf.sel.id),
+        file: String(v.id), id, title,
+      }),
+    });
+    cfStatus("✓ Added '" + id + "' v" + r.pack_version + " — " + r.file_count + " files, "
+      + humanSize(r.total_bytes) + (r.warnings.length ? " (" + r.warnings.length + " optional mod(s) skipped)" : ""));
+    status("Imported modpack '" + id + "' v" + r.pack_version);
+    setTimeout(() => { $("cf-overlay").style.display = "none"; loadCurrent(); }, 900);
+  } catch (e) {
+    cfStatus("Add failed: " + e.message, true);
+    $("cf-add").disabled = false;
+  }
+}
+async function cfRunUpdate(v) {
+  const id = cf.updateId;
+  $("cf-add").disabled = true;
+  cfStatus("Re-importing '" + id + "' from version '" + (v.name || v.id) + "' and rebuilding… (large packs take a while)");
+  try {
+    const r = await getJSON("/console/modpacks/update/" + encodeURIComponent(id), {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ file: String(v.id) }),
+    });
+    if (!r.updated) {
+      cfStatus("Already on that version — nothing to change.");
+      $("cf-add").disabled = false;
+      return;
+    }
+    cfStatus("✓ Updated '" + id + "' → v" + r.pack_version + " — " + r.file_count + " files, "
+      + humanSize(r.total_bytes) + ", " + r.pruned + " stale file(s) pruned"
+      + (r.warnings.length ? " (" + r.warnings.length + " optional mod(s) skipped)" : ""));
+    status("Updated modpack '" + id + "' to v" + r.pack_version);
+    setTimeout(() => { $("cf-overlay").style.display = "none"; loadCurrent(); }, 900);
+  } catch (e) {
+    cfStatus("Update failed: " + e.message, true);
+    $("cf-add").disabled = false;
+  }
+}
+
+
+// ---------- Custom modpack upload (zip → import → build) ----------
+const up = { file: null };
+function upStatus(msg, isErr) {
+  const e = $("up-status");
+  e.textContent = msg;
+  e.className = "cf-status" + (isErr ? " err" : "");
+}
+function upOpen() {
+  up.file = null;
+  for (const id of ["up-file", "up-id", "up-title", "up-version", "up-game"]) $(id).value = "";
+  $("up-fileinfo").textContent = "";
+  upStatus("");
+  upCheck();
+  $("up-overlay").style.display = "flex";
+}
+function upCheck() {
+  $("up-go").disabled = !(up.file && $("up-id").value.trim());
+}
+async function upUpload() {
+  if (!up.file) { upStatus("Pick a zip file first.", true); return; }
+  const id = $("up-id").value.trim();
+  if (!id) { upStatus("Pick a pack id first.", true); return; }
+  const q = new URLSearchParams({ id });
+  for (const [key, elId] of [["title", "up-title"], ["version", "up-version"], ["game_version", "up-game"]]) {
+    const v = $(elId).value.trim();
+    if (v) q.set(key, v);
+  }
+  $("up-go").disabled = true;
+  upStatus("Uploading '" + up.file.name + "' and importing, then building… (large packs take a while)");
+  try {
+    const r = await getJSON("/console/modpacks/upload?" + q, {
+      method: "POST", headers: { "Content-Type": "application/zip" },
+      body: await up.file.arrayBuffer(),
+    });
+    upStatus("✓ Added '" + id + "' v" + r.pack_version + " — " + r.file_count + " files, "
+      + humanSize(r.total_bytes) + (r.warnings.length ? " (" + r.warnings.length + " optional mod(s) skipped)" : ""));
+    status("Imported uploaded pack '" + id + "' v" + r.pack_version);
+    setTimeout(() => { $("up-overlay").style.display = "none"; loadCurrent(); }, 900);
+  } catch (e) {
+    upStatus("Upload failed: " + e.message, true);
+    upCheck();
+  }
+}
+
+
+const loaders = { dashboard: loadDashboard, backups: loadBackups, policy: loadPolicy, packs: loadPacks };
+let current = "dashboard";
+function loadCurrent() {
+  status("Loading…");
+  loaders[current]().then(() => status("Ready")).catch((e) => status(e.message, true));
+}
+document.querySelectorAll("nav button").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll("nav button").forEach((b) => b.classList.remove("active"));
+    document.querySelectorAll(".view").forEach((v) => v.classList.remove("active"));
+    btn.classList.add("active");
+    current = btn.dataset.view;
+    $("view-" + current).classList.add("active");
+    $("view-title").textContent = btn.textContent;
+    loadCurrent();
+  });
+});
+$("btn-refresh").addEventListener("click", loadCurrent);
+$("pack-new").addEventListener("click", () => openPackForm("new"));
+$("pack-add").addEventListener("click", () => openPackForm("add"));
+$("pack-refresh").addEventListener("click", loadCurrent);
+$("pf-save").addEventListener("click", submitPackForm);
+$("pf-cancel").addEventListener("click", closePackForm);
+$("pack-curse").addEventListener("click", cfOpen);
+$("pack-upload").addEventListener("click", upOpen);
+$("up-close").addEventListener("click", () => { $("up-overlay").style.display = "none"; });
+$("up-file").addEventListener("change", () => {
+  up.file = ($("up-file").files && $("up-file").files[0]) || null;
+  $("up-fileinfo").textContent = up.file ? up.file.name + " · " + humanSize(up.file.size) : "";
+  upCheck();
+});
+$("up-id").addEventListener("input", upCheck);
+$("up-go").addEventListener("click", upUpload);
+$("cf-close").addEventListener("click", () => { $("cf-overlay").style.display = "none"; });
+$("cf-provider").addEventListener("change", () => { cf.sel = null; cfSearch(); });
+$("cf-search").addEventListener("keydown", (e) => { if (e.key === "Enter") cfSearch(); });
+$("cf-filter").addEventListener("click", () => {
+  const f = $("cf-filters");
+  f.style.display = f.style.display === "none" ? "flex" : "none";
+});
+$("cf-game").addEventListener("change", () => cfSearch());
+$("cf-sort").addEventListener("change", () => cfSearch());
+$("cf-more").addEventListener("click", () => cfSearch(false));
+$("cf-version").addEventListener("change", cfVersionChanged);
+$("cf-add").addEventListener("click", cfAdd);
+$("cf-detail").addEventListener("input", cfVersionChanged);
+loadCurrent();
+</script>
+</body>
+</html>

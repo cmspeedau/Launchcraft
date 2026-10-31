@@ -1,0 +1,42 @@
+# ------------------------------------------------------------------------------
+# Launchcraft server: world backup API + admin console container.
+# Build from the repository root:
+#   docker build -f docker/Dockerfile.server -t launchcraft-server .
+# ------------------------------------------------------------------------------
+FROM rust:1-bookworm AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config \
+    libzstd-dev \
+    build-essential \
+    ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /usr/src/launchcraft
+
+COPY Cargo.toml Cargo.lock* ./
+COPY crates ./crates
+COPY apps ./apps
+# Workspace members the server crate's manifest graph still needs to resolve.
+COPY gui-client ./gui-client
+
+RUN cargo build --release -p launchcraft-server --verbose
+
+# ------------------------------------------------------------------------------
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    libzstd1 \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /usr/src/launchcraft/target/release/launchcraft-server /usr/local/bin/launchcraft-server
+
+# Uploaded backups and policy.json live here; mount a volume to persist them.
+ENV LAUNCHCRAFT_DATA_DIR=/data
+ENV LAUNCHCRAFT_ADDR=0.0.0.0:9090
+
+EXPOSE 9090
+VOLUME ["/data"]
+
+ENTRYPOINT ["launchcraft-server"]
