@@ -223,7 +223,7 @@ table.file-table { width: 100%; border-collapse: collapse; background: var(--bg-
       </select>
       <button class="btn" id="cf-more" style="display:none">Load more</button>
       <div class="cf-footer-right">
-        <span class="cf-verlabel">Version selected:</span>
+        <span class="cf-verlabel" id="cf-verlabel">Version selected:</span>
         <select class="field-input cf-version" id="cf-version"></select>
         <button class="btn btn-primary" id="cf-add" disabled>＋ Add</button>
       </div>
@@ -394,6 +394,7 @@ async function loadPacks() {
     group.appendChild(mk("Modify", "", () => openPackForm("modify", p)));
     group.appendChild(mk("Check", "", () => packAction(p.id, "check")));
     group.appendChild(mk("Build", "", () => packAction(p.id, "build")));
+    if (p.curseforge) group.appendChild(mk("CF Update", "", () => cfOpenUpdate(p)));
     group.appendChild(mk("Remove", "btn-danger", () => packAction(p.id, "remove")));
     td.appendChild(group);
     tr.appendChild(td);
@@ -471,7 +472,8 @@ async function packAction(id, action) {
 let packFormMode = null, packFormId = null;
 
 // ---------- CurseForge modpack browser ----------
-const cf = { packs: [], total: 0, sel: null, versions: [], ready: null, shown: 0 };
+const cf = { packs: [], total: 0, sel: null, versions: [], ready: null, shown: 0,
+             mode: "add", updateId: null, currentFile: null };
 function cfStatus(msg, isErr) {
   const el = $("cf-status");
   el.textContent = msg;
@@ -482,20 +484,32 @@ function slugify(name) {
     .replace(/[^a-z0-9._-]+/g, "-").replace(/^[.-]+/, "").slice(0, 40);
   return s || "curse-pack";
 }
-async function cfOpen() {
-  $("cf-overlay").style.display = "flex";
+/// "add" browses the whole site; "update" re-imports one registered pack.
+function cfSetMode(mode, row) {
+  cf.mode = mode;
+  cf.updateId = mode === "update" ? row.id : null;
+  cf.currentFile = mode === "update" ? row.curseforge.file_id : null;
+  const up = mode === "update";
+  document.querySelector(".cf-search-row").style.display = up ? "none" : "flex";
+  $("cf-filters").style.display = "none";
+  document.querySelector(".cf-sort").style.display = up ? "none" : "";
+  $("cf-more").style.display = "none";
+  $("cf-verlabel").textContent = up ? "Update to:" : "Version selected:";
+  $("cf-add").textContent = up ? "⟳ Update" : "＋ Add";
+}
+async function cfReady() {
   if (cf.ready === null) {
     try {
       cf.ready = (await getJSON("/console/curseforge")).configured;
     } catch (e) { cf.ready = false; cfStatus(e.message, true); }
   }
   if (!cf.ready) {
-    $("cf-list").innerHTML = "";
-    $("cf-list").appendChild(el("div", "empty",
+    const box = $("cf-list");
+    box.innerHTML = "";
+    box.appendChild(el("div", "empty",
       "CurseForge is not configured on this server.\nSet LAUNCHCRAFT_CURSEFORGE_KEY (a free key from\nhttps://developers.curseforge.org) and restart."));
-    return;
   }
-  if (!cf.packs.length) cfSearch();
+  return cf.ready;
 }
 async function cfSearch(reset = true) {
   if (!cf.ready) return;
@@ -536,6 +550,63 @@ function cfRenderList() {
   });
   $("cf-more").style.display = cf.packs.length && cf.packs.length < cf.total ? "" : "none";
 }
+async function cfOpen() {
+  $("cf-overlay").style.display = "flex";
+  cfSetMode("add", null);
+  if (!(await cfReady())) return;
+  if (!cf.packs.length) cfSearch();
+}
+/// Open the browser in update mode for one CurseForge-sourced pack row.
+async function cfOpenUpdate(row) {
+  $("cf-overlay").style.display = "flex";
+  cfSetMode("update", row);
+  cf.sel = null;
+  cf.versions = [];
+  if (!(await cfReady())) return;
+  const lst = $("cf-list");
+  lst.innerHTML = "";
+  const info = el("div", "empty",
+    "This pack was imported from CurseForge.\nPick a version to re-import it into the same workspace.");
+  info.style.border = "none";
+  lst.appendChild(info);
+  const box = $("cf-detail");
+  box.innerHTML = "";
+  box.appendChild(el("div", "name", row.title || row.id));
+  box.appendChild(el("div", "dim", "Pack '" + row.id + "' · project " + row.curseforge.project_id
+    + " · currently on file " + row.curseforge.file_id));
+  box.appendChild(el("div", null,
+    "An update re-downloads the pack, re-fetches every mod (dropping mods the new version no longer uses), "
+    + "re-applies the pack's overrides and rebuilds it. Your pack id and title are kept."));
+  cfStatus("");
+  await cfLoadVersions(row.curseforge.project_id);
+}
+/// Fill the footer version picker for a project; shared by both modes.
+async function cfLoadVersions(projectId) {
+  $("cf-add").disabled = true;
+  const sel = $("cf-version");
+  sel.innerHTML = "";
+  const loading = el("option"); loading.textContent = "Loading versions…"; sel.appendChild(loading);
+  try {
+    const data = await getJSON("/console/curseforge/files?mod_id=" + projectId);
+    cf.versions = data.versions;
+    sel.innerHTML = "";
+    cf.versions.forEach((v, vi) => {
+      const o = el("option");
+      o.value = String(vi);
+      o.textContent = [v.name, (v.game_versions || []).slice(0, 2).join(" "), v.size ? humanSize(v.size) : ""]
+        .filter(Boolean).join(" · ") + (v.id === cf.currentFile ? " · (installed)" : "");
+      sel.appendChild(o);
+    });
+    if (!cf.versions.length) {
+      const none = el("option"); none.textContent = "No files"; sel.appendChild(none);
+    }
+    cfVersionChanged();
+  } catch (e) {
+    sel.innerHTML = "";
+    const err = el("option"); err.textContent = "Versions failed: " + e.message;
+    sel.appendChild(err);
+  }
+}
 async function cfSelect(i) {
   cf.sel = cf.packs[i];
   cfRenderList();
@@ -561,37 +632,22 @@ async function cfSelect(i) {
   d2.appendChild(tIn);
   grid.appendChild(d1); grid.appendChild(d2);
   box.appendChild(grid);
-  $("cf-add").disabled = true;
-  $("cf-version").innerHTML = "";
-  const opt = el("option"); opt.textContent = "Loading versions…"; $("cf-version").appendChild(opt);
-  try {
-    const data = await getJSON("/console/curseforge/files?mod_id=" + cf.sel.id);
-    cf.versions = data.versions;
-    $("cf-version").innerHTML = "";
-    cf.versions.forEach((v, vi) => {
-      const o = el("option");
-      o.value = String(vi);
-      o.textContent = [v.name, (v.game_versions || []).slice(0, 2).join(" "), v.size ? humanSize(v.size) : ""]
-        .filter(Boolean).join(" · ");
-      $("cf-version").appendChild(o);
-    });
-    if (!cf.versions.length) {
-      const none = el("option"); none.textContent = "No files"; $("cf-version").appendChild(none);
-    }
-    cfVersionChanged();
-  } catch (e) {
-    $("cf-version").innerHTML = "";
-    const err = el("option"); err.textContent = "Versions failed: " + e.message;
-    $("cf-version").appendChild(err);
-  }
+  await cfLoadVersions(cf.sel.id);
 }
 function cfVersionChanged() {
+  if (cf.mode === "update") {
+    $("cf-add").disabled = !(cf.ready && cf.updateId && cf.versions.length);
+    return;
+  }
   const idIn = $("cf-id");
   $("cf-add").disabled = !(cf.ready && cf.sel && cf.versions.length && idIn && idIn.value.trim());
 }
 async function cfAdd() {
-  if (!cf.sel || !cf.versions.length) return;
+  if (!cf.versions.length) return;
   const v = cf.versions[Number($("cf-version").value) || 0];
+  if (!v) return;
+  if (cf.mode === "update") return cfRunUpdate(v);
+  if (!cf.sel) return;
   const id = ($("cf-id") ? $("cf-id").value : "").trim();
   const title = ($("cf-title") ? $("cf-title").value : "").trim() || cf.sel.name;
   if (!id) { cfStatus("Pick a pack id first.", true); return; }
@@ -608,6 +664,30 @@ async function cfAdd() {
     setTimeout(() => { $("cf-overlay").style.display = "none"; loadCurrent(); }, 900);
   } catch (e) {
     cfStatus("Add failed: " + e.message, true);
+    $("cf-add").disabled = false;
+  }
+}
+async function cfRunUpdate(v) {
+  const id = cf.updateId;
+  $("cf-add").disabled = true;
+  cfStatus("Re-importing '" + id + "' from file '" + v.name + "' and rebuilding… (large packs take a while)");
+  try {
+    const r = await getJSON("/console/curseforge/update/" + encodeURIComponent(id), {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ file_id: v.id }),
+    });
+    if (!r.updated) {
+      cfStatus("Already on that CurseForge file — nothing to change.");
+      $("cf-add").disabled = false;
+      return;
+    }
+    cfStatus("✓ Updated '" + id + "' → v" + r.pack_version + " — " + r.file_count + " files, "
+      + humanSize(r.total_bytes) + ", " + r.pruned + " stale file(s) pruned"
+      + (r.warnings.length ? " (" + r.warnings.length + " optional mod(s) skipped)" : ""));
+    status("Updated CurseForge pack '" + id + "' to v" + r.pack_version);
+    setTimeout(() => { $("cf-overlay").style.display = "none"; loadCurrent(); }, 900);
+  } catch (e) {
+    cfStatus("Update failed: " + e.message, true);
     $("cf-add").disabled = false;
   }
 }

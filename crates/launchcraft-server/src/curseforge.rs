@@ -13,7 +13,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use axum::extract::{Query, State};
+use axum::extract::{Path as UrlPath, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
 use serde::Deserialize;
@@ -298,118 +298,15 @@ pub async fn add(
     }
     let pack_id = body.id.clone();
 
-    // 1. Ask the API where the modpack zip actually lives, then fetch it.
-    let dl = cf_get_json(
-        &state,
-        &format!(
-            "{}/mods/{}/files/{}/download",
-            state.curse_base, body.mod_id, body.file_id
-        ),
-        &[],
-    )
-    .await?;
-    let cdn = dl
-        .pointer("/data/cdnUrl")
-        .and_then(Value::as_str)
-        .ok_or_else(|| ApiError::new(StatusCode::BAD_GATEWAY, "curseforge gave no cdnUrl"))?
-        .to_string();
-    let zip_bytes = download_bytes(&state, &cdn).await?;
-
-    // 2. Unpack to staging (zip-slip safe), then read the pack manifest.
-    let staging = state.data_dir.join("tmp").join(format!(
-        "curse-{}",
-        chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
-    ));
-    std::fs::create_dir_all(&staging)?;
-    let plan = (|| -> Result<ImportPlan, ApiError> {
-        extract_zip(&zip_bytes, &staging)?;
-        read_plan(&staging)
-    })();
-    let plan = match plan {
-        Ok(p) => p,
-        Err(e) => {
-            let _ = std::fs::remove_dir_all(&staging);
-            return Err(e);
-        }
-    };
-
-    // 3. Scaffold the workspace and fetch every referenced mod file.
     let root = state.data_dir.join("packs").join(&pack_id);
     let src = root.join("src");
     let dist = root.join("dist");
-    std::fs::create_dir_all(src.join("mods"))?;
-    std::fs::create_dir_all(src.join("config"))?;
     std::fs::create_dir_all(&dist)?;
 
-    let mut set = tokio::task::JoinSet::new();
-    let mut in_flight = 0usize;
-    let mut fetched = 0usize;
-    let mut warnings: Vec<String> = Vec::new();
-    for mf in plan.mods.clone() {
-        let st = state.clone();
-        let src = src.clone();
-        set.spawn(async move {
-            let result: Result<(), ApiError> = async {
-                let (rel, url) = match &mf.direct {
-                    Some((rel, url)) => (rel.clone(), url.clone()),
-                    None => {
-                        let info = cf_get_json(
-                            &st,
-                            &format!(
-                                "{}/mods/{}/files/{}",
-                                st.curse_base, mf.project_id, mf.file_id
-                            ),
-                            &[],
-                        )
-                        .await?;
-                        let url = info
-                            .pointer("/data/downloadUrl")
-                            .and_then(Value::as_str)
-                            .filter(|u| !u.is_empty())
-                            .ok_or_else(|| {
-                                ApiError::new(
-                                    StatusCode::BAD_GATEWAY,
-                                    format!(
-                                        "no downloadUrl for mod {} file {}",
-                                        mf.project_id, mf.file_id
-                                    ),
-                                )
-                            })?
-                            .to_string();
-                        let name = info
-                            .pointer("/data/fileName")
-                            .and_then(Value::as_str)
-                            .and_then(safe_file_name)
-                            .unwrap_or_else(|| format!("mod-{}-{}.jar", mf.project_id, mf.file_id));
-                        (format!("mods/{name}"), url)
-                    }
-                };
-                let bytes = download_bytes(&st, &url).await?;
-                let target = src.join(&rel);
-                if let Some(parent) = target.parent() {
-                    std::fs::create_dir_all(parent)?;
-                }
-                std::fs::write(&target, bytes)?;
-                Ok(())
-            }
-            .await;
-            (mf, result)
-        });
-        in_flight += 1;
-        // Keep at most 8 concurrent fetches: polite to the CDN, simple code.
-        if in_flight == 8 {
-            drain_one(&mut set, &mut in_flight, &mut fetched, &mut warnings).await?;
-        }
-    }
-    while in_flight > 0 {
-        drain_one(&mut set, &mut in_flight, &mut fetched, &mut warnings).await?;
-    }
-
-    // 4. Overrides (configs, scripts, …) merge straight into src/.
-    if plan.overrides.is_dir() {
-        merge_dir(&plan.overrides, &src)?;
-    }
-    let _ = std::fs::remove_dir_all(&staging);
+    // Download the modpack zip, fetch every referenced mod into src/mods/,
+    // and merge the pack's overrides into the tree.
+    let outcome = import_modpack(&state, body.mod_id, body.file_id, &src).await?;
+    let plan = outcome.plan;
 
     // 5. pack.json + registry + build.
     let title = body
@@ -436,44 +333,26 @@ pub async fn add(
         src: Some(src.clone()),
         dist: dist.clone(),
         created_at: chrono::Utc::now().to_rfc3339(),
+        curseforge: Some(crate::packs::CurseSource {
+            project_id: body.mod_id,
+            file_id: body.file_id,
+        }),
     })?;
     registry.save(&state.data_dir)?;
 
-    let built = tokio::task::spawn_blocking(move || {
-        let config = launchcraft_builder::BuildConfig::load_or_default(Some(
-            src.join("pack.json").as_path(),
-        ));
-        launchcraft_builder::PackBuilder::new(&src, &dist, config)
-            .build()
-            .map(|m| {
-                json!({
-                    "pack_version": m.pack_version,
-                    "file_count": m.files.len(),
-                    "total_bytes": m.files.values().map(|e| e.size).sum::<u64>(),
-                })
-            })
-            .map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-    .map_err(|e| {
-        ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("build failed: {e}"),
-        )
-    })?;
+    let built = crate::console::run_pack_build(src, dist, pack_id.clone(), None).await?;
 
     tracing::info!(
         "imported CurseForge pack '{pack_id}' (project {} file {}): {} file(s) in mods/",
         body.mod_id,
         body.file_id,
-        fetched
+        outcome.fetched
     );
     Ok(Json(json!({
         "id": pack_id,
         "built": true,
-        "mods_fetched": fetched,
-        "warnings": warnings,
+        "mods_fetched": outcome.fetched,
+        "warnings": outcome.warnings,
         "game_version": plan.game_version,
         "loader": plan.loader,
         "pack_version": built["pack_version"],
@@ -482,12 +361,326 @@ pub async fn add(
     })))
 }
 
+/// What one successful `import_modpack` run produced.
+struct ImportOutcome {
+    plan: ImportPlan,
+    /// Mod files that landed in the tree.
+    fetched: usize,
+    /// Optional mods that could not be downloaded, described.
+    warnings: Vec<String>,
+    /// `src`-relative paths this import actually wrote (for update pruning).
+    written: Vec<String>,
+}
+
+/// Download a CurseForge modpack file and (re)create its contents inside
+/// `src`: fetch every referenced mod file into `src/mods/`, then merge the
+/// pack's `overrides/` onto the tree. Shared by Add and Update; the staging
+/// directory is removed on every path, errors included.
+async fn import_modpack(
+    state: &Arc<AppState>,
+    mod_id: u64,
+    file_id: u64,
+    src: &Path,
+) -> Result<ImportOutcome, ApiError> {
+    // Ask the API where the modpack zip actually lives, then fetch it.
+    let dl = cf_get_json(
+        state,
+        &format!(
+            "{}/mods/{}/files/{}/download",
+            state.curse_base, mod_id, file_id
+        ),
+        &[],
+    )
+    .await?;
+    let cdn = dl
+        .pointer("/data/cdnUrl")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ApiError::new(StatusCode::BAD_GATEWAY, "curseforge gave no cdnUrl"))?
+        .to_string();
+    let zip_bytes = download_bytes(state, &cdn).await?;
+
+    // Unpack to staging (zip-slip safe), then read the pack manifest.
+    let staging = state.data_dir.join("tmp").join(format!(
+        "curse-{}",
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+    ));
+    std::fs::create_dir_all(&staging)?;
+    let plan = (|| -> Result<ImportPlan, ApiError> {
+        extract_zip(&zip_bytes, &staging)?;
+        read_plan(&staging)
+    })();
+    let plan = match plan {
+        Ok(p) => p,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(e);
+        }
+    };
+
+    // Fetch every referenced mod, then merge overrides over src/. The async
+    // block lets a required-mod failure still fall through to cleanup.
+    let mut fetched = 0usize;
+    let mut written: Vec<String> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
+    let fetch = async {
+        std::fs::create_dir_all(src.join("mods"))?;
+        std::fs::create_dir_all(src.join("config"))?;
+        let mut set = tokio::task::JoinSet::new();
+        let mut in_flight = 0usize;
+        for mf in plan.mods.clone() {
+            let st = state.clone();
+            let src = src.to_path_buf();
+            set.spawn(async move {
+                let result: Result<String, ApiError> = async {
+                    let (rel, url) = match &mf.direct {
+                        Some((rel, url)) => (rel.clone(), url.clone()),
+                        None => {
+                            let info = cf_get_json(
+                                &st,
+                                &format!(
+                                    "{}/mods/{}/files/{}",
+                                    st.curse_base, mf.project_id, mf.file_id
+                                ),
+                                &[],
+                            )
+                            .await?;
+                            let url = info
+                                .pointer("/data/downloadUrl")
+                                .and_then(Value::as_str)
+                                .filter(|u| !u.is_empty())
+                                .ok_or_else(|| {
+                                    ApiError::new(
+                                        StatusCode::BAD_GATEWAY,
+                                        format!(
+                                            "no downloadUrl for mod {} file {}",
+                                            mf.project_id, mf.file_id
+                                        ),
+                                    )
+                                })?
+                                .to_string();
+                            let name = info
+                                .pointer("/data/fileName")
+                                .and_then(Value::as_str)
+                                .and_then(safe_file_name)
+                                .unwrap_or_else(|| {
+                                    format!("mod-{}-{}.jar", mf.project_id, mf.file_id)
+                                });
+                            (format!("mods/{name}"), url)
+                        }
+                    };
+                    let bytes = download_bytes(&st, &url).await?;
+                    let target = src.join(&rel);
+                    if let Some(parent) = target.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    std::fs::write(&target, bytes)?;
+                    Ok(rel)
+                }
+                .await;
+                (mf, result)
+            });
+            in_flight += 1;
+            // Keep at most 8 concurrent fetches: polite to the CDN, simple code.
+            if in_flight == 8 {
+                drain_one(
+                    &mut set,
+                    &mut in_flight,
+                    &mut fetched,
+                    &mut written,
+                    &mut warnings,
+                )
+                .await?;
+            }
+        }
+        while in_flight > 0 {
+            drain_one(
+                &mut set,
+                &mut in_flight,
+                &mut fetched,
+                &mut written,
+                &mut warnings,
+            )
+            .await?;
+        }
+        // Overrides (configs, scripts, ...) merge straight into src/.
+        if plan.overrides.is_dir() {
+            merge_dir(&plan.overrides, src)?;
+        }
+        Ok::<(), ApiError>(())
+    }
+    .await;
+    let _ = std::fs::remove_dir_all(&staging);
+    fetch?;
+    Ok(ImportOutcome {
+        plan,
+        fetched,
+        warnings,
+        written,
+    })
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateBody {
+    /// Explicit target file; defaults to the project's newest file.
+    #[serde(default)]
+    pub file_id: Option<u64>,
+}
+
+/// The newest file id of a CurseForge project (newest release date).
+async fn latest_file_id(state: &AppState, project_id: u64) -> Result<u64, ApiError> {
+    let body = cf_get_json(
+        state,
+        &format!("{}/mods/{}/files", state.curse_base, project_id),
+        &[("pageSize", "50".into())],
+    )
+    .await?;
+    body.get("data")
+        .and_then(Value::as_array)
+        .and_then(|items| {
+            items
+                .iter()
+                .filter_map(|f| {
+                    let id = f.get("id").and_then(Value::as_u64)?;
+                    let date = f.get("releaseDate").and_then(Value::as_str).unwrap_or("");
+                    Some((date.to_string(), id))
+                })
+                .max()
+        })
+        .map(|(_, id)| id)
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::BAD_GATEWAY,
+                "curseforge listed no files for this pack",
+            )
+        })
+}
+
+/// Delete files under `src/mods` that the fresh import did not write, so
+/// mods removed between CurseForge versions do not linger in the pack.
+fn prune_mods(src: &Path, written: &[String]) -> Result<usize, ApiError> {
+    let keep: std::collections::HashSet<String> =
+        written.iter().map(|s| s.replace('\\', "/")).collect();
+    let mods = src.join("mods");
+    if !mods.is_dir() {
+        return Ok(0);
+    }
+    let mut removed = 0usize;
+    let mut stack = vec![mods];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir)? {
+            let path = entry?.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let rel = path
+                .strip_prefix(src)
+                .map(|r| r.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_default();
+            if !keep.contains(&rel) {
+                std::fs::remove_file(&path)?;
+                removed += 1;
+            }
+        }
+    }
+    Ok(removed)
+}
+
+/// `POST /console/curseforge/update/:id` — re-import a CurseForge pack at a
+/// newer project file and rebuild it. The registry title and pack id stay;
+/// the mod list is rebuilt from the new manifest (stale mods pruned) and
+/// overrides are re-merged. Body: optionally `{ "file_id": N }`.
+pub async fn update(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    UrlPath(id): UrlPath<String>,
+    body: Option<Json<UpdateBody>>,
+) -> Result<Json<Value>, ApiError> {
+    crate::console::auth(&state, &headers)?;
+    require_key(&state)?;
+    let mut registry = crate::packs::PackRegistry::load(&state.data_dir)?;
+    let idx = registry
+        .packs
+        .iter()
+        .position(|p| p.id == id)
+        .ok_or_else(|| {
+            ApiError::new(StatusCode::NOT_FOUND, format!("pack not registered: {id}"))
+        })?;
+    let entry = registry.packs[idx].clone();
+    let source = entry.curseforge.clone().ok_or_else(|| {
+        ApiError::bad_request(format!(
+            "pack '{id}' was not imported from CurseForge, so there is nothing to update"
+        ))
+    })?;
+    let src = entry.src.clone().ok_or_else(|| {
+        ApiError::bad_request(format!("pack '{id}' has no source tree to update"))
+    })?;
+    if !src.is_dir() {
+        return Err(ApiError::bad_request(format!(
+            "pack '{id}' source tree is missing: {}",
+            src.display()
+        )));
+    }
+
+    // Which file to move to: the explicit pick, else the project's newest.
+    let requested = body.and_then(|Json(b)| b.file_id);
+    let target = match requested {
+        Some(f) => f,
+        None => latest_file_id(&state, source.project_id).await?,
+    };
+    if target == source.file_id {
+        return Ok(Json(json!({
+            "id": id, "updated": false, "file_id": target,
+            "note": "the pack already tracks this CurseForge file",
+        })));
+    }
+
+    // Re-create the pack contents first; only once the new set has fully
+    // landed are stale mods pruned, so a failed import breaks nothing.
+    let outcome = import_modpack(&state, source.project_id, target, &src).await?;
+    let pruned = prune_mods(&src, &outcome.written)?;
+
+    // pack.json: same id + title, new version; then note the new file id.
+    let mut config =
+        launchcraft_builder::BuildConfig::load_or_default(Some(src.join("pack.json").as_path()));
+    if !outcome.plan.version.trim().is_empty() {
+        config.version = outcome.plan.version.clone();
+    }
+    if !outcome.plan.game_version.trim().is_empty() {
+        config.game_version = outcome.plan.game_version.clone();
+    }
+    std::fs::write(src.join("pack.json"), serde_json::to_vec_pretty(&config)?)?;
+    registry.packs[idx].curseforge = Some(crate::packs::CurseSource {
+        project_id: source.project_id,
+        file_id: target,
+    });
+    registry.save(&state.data_dir)?;
+
+    let built = crate::console::run_pack_build(src, entry.dist, id.clone(), None).await?;
+    tracing::info!(
+        "updated CurseForge pack '{id}' (project {}) file {} -> {}",
+        source.project_id,
+        source.file_id,
+        target
+    );
+    Ok(Json(json!({
+        "id": id, "updated": true,
+        "from_file": source.file_id, "file_id": target,
+        "mods_fetched": outcome.fetched, "pruned": pruned, "warnings": outcome.warnings,
+        "pack_version": built["pack_version"],
+        "file_count": built["file_count"],
+        "total_bytes": built["total_bytes"],
+    })))
+}
+
 /// Join one spawned mod fetch: required-mod failures abort the import,
-/// optional ones become warnings.
+/// optional ones become warnings. Successes record the relative path that
+/// landed so an update can tell kept files from stale ones.
 async fn drain_one(
-    set: &mut tokio::task::JoinSet<(ModFile, Result<(), ApiError>)>,
+    set: &mut tokio::task::JoinSet<(ModFile, Result<String, ApiError>)>,
     in_flight: &mut usize,
     fetched: &mut usize,
+    written: &mut Vec<String>,
     warnings: &mut Vec<String>,
 ) -> Result<(), ApiError> {
     let (mf, result) = set
@@ -497,7 +690,10 @@ async fn drain_one(
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     *in_flight -= 1;
     match result {
-        Ok(()) => *fetched += 1,
+        Ok(rel) => {
+            *fetched += 1;
+            written.push(rel);
+        }
         Err(e) => {
             if mf.required {
                 return Err(e);

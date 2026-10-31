@@ -135,6 +135,7 @@ impl AppState {
             src: None,
             dist: dist.clone(),
             created_at: chrono::Utc::now().to_rfc3339(),
+            curseforge: None,
         });
         registry.save(&self.data_dir)?;
         tracing::info!(
@@ -287,6 +288,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/console/curseforge/search", get(curseforge::search))
         .route("/console/curseforge/files", get(curseforge::files))
         .route("/console/curseforge/add", post(curseforge::add))
+        .route("/console/curseforge/update/:id", post(curseforge::update))
         .with_state(state.clone());
     let api: axum::Router<()> = api_routes().with_state(state);
     Router::new()

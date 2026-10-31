@@ -209,6 +209,14 @@ served to launchers exactly like a hand-built one. A missing **required** mod
 aborts the import; optional mods are skipped with a warning. Enable it by
 setting `LAUNCHCRAFT_CURSEFORGE_KEY` (a free key from developers.curseforge.org).
 
+Imported packs keep their CurseForge provenance (project + file id) in the
+registry, so the Pack Manager row gains a **CF Update** button: pick a newer
+version (default: the project's newest) and the server re-downloads the pack,
+re-fetches every mod, **prunes mods the new version dropped**, re-applies the
+overrides and rebuilds — id and title are kept. Asking for the file already
+installed is a no-op. Packs you built by hand have no provenance and no
+update button.
+
 ---
 
 ## Quickstart & Local Development

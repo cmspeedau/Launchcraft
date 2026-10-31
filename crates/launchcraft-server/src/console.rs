@@ -97,6 +97,7 @@ pub async fn packs_list(
                 "src": p.src.as_ref().map(|s| s.display().to_string()),
                 "dist": p.dist.display().to_string(),
                 "created_at": p.created_at,
+                "curseforge": p.curseforge,
             });
             let status = dist_status(&p.dist);
             if let Some(map) = row.as_object_mut() {
@@ -174,6 +175,7 @@ pub async fn packs_new(
         src: Some(src.clone()),
         dist: dist.clone(),
         created_at: chrono::Utc::now().to_rfc3339(),
+        curseforge: None,
     })?;
     registry.save(&state.data_dir)?;
     tracing::info!("created new pack '{}' at {}", body.id, src.display());
@@ -231,6 +233,7 @@ pub async fn packs_add(
         src,
         dist,
         created_at: chrono::Utc::now().to_rfc3339(),
+        curseforge: None,
     })?;
     registry.save(&state.data_dir)?;
     tracing::info!("registered pack '{}'", body.id);
@@ -415,19 +418,32 @@ pub async fn packs_build(
         ApiError::bad_request("pack has no source tree — set one via Modify, or use New Pack")
     })?;
 
-    let built = tokio::task::spawn_blocking(move || {
+    let built = run_pack_build(src, entry.dist, entry.id, version).await?;
+    tracing::info!("built pack '{id}'");
+    Ok(Json(built))
+}
+
+/// Run the pack builder over a workspace. Shared by the Build endpoint and
+/// the CurseForge import/update handlers.
+pub(crate) async fn run_pack_build(
+    src: std::path::PathBuf,
+    dist: std::path::PathBuf,
+    pack_id: String,
+    version: Option<String>,
+) -> Result<serde_json::Value, ApiError> {
+    tokio::task::spawn_blocking(move || {
         let mut config = launchcraft_builder::BuildConfig::load_or_default(Some(
             src.join("pack.json").as_path(),
         ));
-        config.pack_id = entry.id.clone();
+        config.pack_id = pack_id.clone();
         if let Some(v) = version {
             config.version = v;
         }
-        launchcraft_builder::PackBuilder::new(&src, &entry.dist, config)
+        launchcraft_builder::PackBuilder::new(&src, &dist, config)
             .build()
             .map(|manifest| {
                 serde_json::json!({
-                    "built": true, "id": entry.id, "pack_version": manifest.pack_version,
+                    "built": true, "id": pack_id, "pack_version": manifest.pack_version,
                     "file_count": manifest.files.len(),
                     "total_bytes": manifest.files.values().map(|e| e.size).sum::<u64>(),
                 })
@@ -441,7 +457,5 @@ pub async fn packs_build(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("build failed: {e}"),
         )
-    })?;
-    tracing::info!("built pack '{id}'");
-    Ok(Json(built))
+    })
 }

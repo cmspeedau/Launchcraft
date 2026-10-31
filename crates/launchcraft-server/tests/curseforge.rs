@@ -98,11 +98,18 @@ async fn mod_files(
         return e.into_response();
     }
     let json = match id {
-        1000 => serde_json::json!({ "data": [{
-            "id": 5001, "displayName": "Adventure 1.0.0", "fileName": "adventure-1.0.0.zip",
-            "fileLength": 2048, "releaseDate": "2026-05-01T00:00:00Z",
-            "gameVersions": ["1.20.1", "Forge"],
-        }] }),
+        1000 => serde_json::json!({ "data": [
+            {
+                "id": 5001, "displayName": "Adventure 1.0.0", "fileName": "adventure-1.0.0.zip",
+                "fileLength": 2048, "releaseDate": "2026-05-01T00:00:00Z",
+                "gameVersions": ["1.20.1", "Forge"],
+            },
+            {
+                "id": 5002, "displayName": "Adventure 2.0.0", "fileName": "adventure-2.0.0.zip",
+                "fileLength": 2560, "releaseDate": "2026-09-01T00:00:00Z",
+                "gameVersions": ["1.20.1", "Forge"],
+            },
+        ] }),
         1100 => serde_json::json!({ "data": [{
             "id": 5101, "displayName": "Fields 0.3", "fileName": "fields.zip",
             "fileLength": 1024, "releaseDate": "2026-06-01T00:00:00Z",
@@ -123,6 +130,7 @@ async fn pack_download(
     }
     let cdn_name = match (id, file) {
         (1000, 5001) => "adventure.zip",
+        (1000, 5002) => "adventure2.zip",
         (1100, 5101) => "fields.zip",
         _ => return StatusCode::NOT_FOUND.into_response(),
     };
@@ -196,6 +204,29 @@ async fn spawn_mock() -> (String, Arc<Mock>) {
         .lock()
         .unwrap()
         .insert("adventure.zip".into(), zip.finish().unwrap().into_inner());
+
+    // v2 of the same Forge project: alpha mod only (beta mod removed),
+    // changed config, and it no longer ships an options.txt.
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    zip.start_file("manifest.json", opts).unwrap();
+    zip.write_all(
+        br#"{
+        "manifestType": "modPack", "manifestVersion": 1,
+        "name": "Adventure Wasteland", "version": "2.0.0", "author": "Tester",
+        "files": [
+            { "projectID": 201, "fileID": 9001, "required": true }
+        ],
+        "overrides": "overrides",
+        "minecraft": { "version": "1.20.1", "modLoaders": [{ "id": "forge-47.2.0", "primary": true }] }
+        }"#,
+    )
+    .unwrap();
+    zip.start_file("overrides/config/game.cfg", opts).unwrap();
+    zip.write_all(b"adventure=v2").unwrap();
+    mock.files
+        .lock()
+        .unwrap()
+        .insert("adventure2.zip".into(), zip.finish().unwrap().into_inner());
 
     // Fabric pack zip: modrinth.index.json with a direct download URL.
     let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
@@ -287,7 +318,7 @@ async fn curseforge_search_files_and_add_build_the_pack() {
     assert_eq!(list["total"], 2);
     assert_eq!(mock.searches.lock().unwrap().last().unwrap(), "adventure");
 
-    // Versions listed for the selected pack.
+    // Versions listed for the selected pack, newest first (5002 > 5001).
     let versions: serde_json::Value = reqwest::Client::new()
         .get(format!("{base}/console/curseforge/files?mod_id=1000"))
         .send()
@@ -296,8 +327,8 @@ async fn curseforge_search_files_and_add_build_the_pack() {
         .json()
         .await
         .unwrap();
-    assert_eq!(versions["versions"].as_array().unwrap().len(), 1);
-    assert_eq!(versions["versions"][0]["id"], 5001);
+    assert_eq!(versions["versions"].as_array().unwrap().len(), 2);
+    assert_eq!(versions["versions"][0]["id"], 5002);
 
     // Add: full import + build.
     let res = reqwest::Client::new()
@@ -363,6 +394,9 @@ async fn curseforge_search_files_and_add_build_the_pack() {
     assert_eq!(row["status"], "ok");
     assert_eq!(row["pack_version"], "1.0.0");
     assert_eq!(row["file_count"], 4); // 2 mods + game.cfg + options.txt
+                                      // The row keeps CurseForge provenance so the console can offer updates.
+    assert_eq!(row["curseforge"]["project_id"], 1000);
+    assert_eq!(row["curseforge"]["file_id"], 5001);
 
     let public: serde_json::Value = reqwest::Client::new()
         .get(format!("{base}/packs"))
@@ -410,6 +444,131 @@ async fn curseforge_fabric_direct_downloads() {
         std::fs::read(src.join("mods/fabric-first.jar")).unwrap(),
         b"first-bytes"
     );
+}
+
+#[tokio::test]
+async fn curseforge_update_reimports_prunes_and_rebuilds() {
+    let (cf, _mock) = spawn_mock().await;
+    let data = tempfile::tempdir().unwrap();
+    let base = spawn_server(data.path(), format!("{cf}/v1"), Some(KEY.into())).await;
+    let client = reqwest::Client::new();
+
+    // Import the old version first.
+    let res = client
+        .post(format!("{base}/console/curseforge/add"))
+        .json(&serde_json::json!({
+            "mod_id": 1000, "file_id": 5001, "id": "adventure", "title": "Adventure Wasteland",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let src = data.path().join("packs/adventure/src");
+    assert!(src.join("mods/beta mod 2.jar").is_file());
+
+    // Asking explicitly for the file already installed is a no-op.
+    let res = client
+        .post(format!("{base}/console/curseforge/update/adventure"))
+        .json(&serde_json::json!({ "file_id": 5001 }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let r: serde_json::Value = res.json().await.unwrap();
+    assert_eq!(r["updated"], false);
+
+    // Default update: newest file for the project (5002 = v2.0.0).
+    let res = client
+        .post(format!("{base}/console/curseforge/update/adventure"))
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200, "update failed: {:?}", res.text().await);
+    let r: serde_json::Value = res.json().await.unwrap();
+    assert_eq!(r["updated"], true);
+    assert_eq!(r["from_file"], 5001);
+    assert_eq!(r["file_id"], 5002);
+    assert_eq!(r["pack_version"], "2.0.0");
+    assert_eq!(r["pruned"], 1, "the beta mod dropped by v2 must be pruned");
+
+    // The tree is now v2: beta gone, alpha in place, override updated, and a
+    // file the new version no longer ships (options.txt) is left alone.
+    assert_eq!(
+        std::fs::read(src.join("mods/alpha-mod-1.2.jar")).unwrap(),
+        b"alpha-mod-bytes"
+    );
+    assert!(!src.join("mods/beta mod 2.jar").exists());
+    assert_eq!(
+        std::fs::read(src.join("config/game.cfg")).unwrap(),
+        b"adventure=v2"
+    );
+    assert_eq!(
+        std::fs::read(src.join("options.txt")).unwrap(),
+        b"renderDistance:12"
+    );
+
+    // Registry notes the new file and keeps the title; the row shows v2.
+    let registry: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(data.path().join("packs.json")).unwrap())
+            .unwrap();
+    let entry = registry["packs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == "adventure")
+        .unwrap();
+    assert_eq!(entry["curseforge"]["file_id"], 5002);
+    assert_eq!(entry["title"], "Adventure Wasteland");
+    let packs: serde_json::Value = client
+        .get(format!("{base}/console/packs"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let row = packs["packs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == "adventure")
+        .unwrap();
+    assert_eq!(row["pack_version"], "2.0.0");
+    assert_eq!(row["file_count"], 3); // alpha + game.cfg + options.txt
+
+    // Again with no argument: already at the newest file.
+    let res = client
+        .post(format!("{base}/console/curseforge/update/adventure"))
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+    let r: serde_json::Value = res.json().await.unwrap();
+    assert_eq!(r["updated"], false);
+    assert_eq!(r["file_id"], 5002);
+
+    // A hand-made pack has no provenance → 400; an unknown id → 404.
+    client
+        .post(format!("{base}/console/packs/new"))
+        .json(&serde_json::json!({ "id": "manual", "title": "Manual" }))
+        .send()
+        .await
+        .unwrap();
+    let res = client
+        .post(format!("{base}/console/curseforge/update/manual"))
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 400);
+    let res = client
+        .post(format!("{base}/console/curseforge/update/ghost"))
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 404);
 }
 
 #[tokio::test]

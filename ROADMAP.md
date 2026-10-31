@@ -238,6 +238,11 @@ Phase 1: Workspace & Core Foundation (Done)
     concurrency) plus zip-slip-safe `overrides/` into a Pack Manager workspace,
     registers and builds it. Missing required mods abort; optional mods warn.
     Tests run against an in-process mock of the Core API.
+  - **Updates** for imported packs (Prism-style): the registry stores the CurseForge
+    project + file id, so a pack row gets a "CF Update" action — re-download the
+    chosen (default newest) file, re-fetch mods, prune mods the new version dropped,
+    re-merge overrides, bump `pack.json`'s version and rebuild. Same-file requests
+    report `{updated: false}`; hand-built packs are refused with 400.
 - [x] **End-to-End Tests:**
   - Live HTTP round-trips using the real `WorldArchiver` and `BackupSyncClient`
     (upload → list → download → byte-identical restore), policy refusal, token gating,

@@ -27,6 +27,16 @@ pub enum RegistryError {
     Json(#[from] serde_json::Error),
 }
 
+/// Where a pack came from on CurseForge, so the console can offer an
+/// in-place "CF Update" that re-imports a newer file of the same project.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CurseSource {
+    /// CurseForge project (mod) id.
+    pub project_id: u64,
+    /// The project file last imported; an update bumps this.
+    pub file_id: u64,
+}
+
 /// One row of the Pack Manager table.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PackEntry {
@@ -41,6 +51,9 @@ pub struct PackEntry {
     pub dist: PathBuf,
     #[serde(default)]
     pub created_at: String,
+    /// Set for packs imported from CurseForge; drives the update button.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub curseforge: Option<CurseSource>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -119,6 +132,7 @@ mod tests {
             src: None,
             dist: PathBuf::from("/srv/dist").join(id),
             created_at: String::new(),
+            curseforge: None,
         }
     }
 
