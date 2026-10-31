@@ -10,9 +10,13 @@ description = "Client-side egui GUI for Launchcraft"
 eframe = "0.27"
 launchcraft-core = { path = "../crates/launchcraft-core" }
 launchcraft-backup = { path = "../crates/launchcraft-backup" }
+launchcraft-sync = { path = "../crates/launchcraft-sync" }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+reqwest = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

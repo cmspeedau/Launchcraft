@@ -211,10 +211,22 @@ Phase 1: Workspace & Core Foundation (Done)
 - [x] **Deployment:**
   - `docker/Dockerfile.server` and a `backup-server` Compose service (port 9090,
     `./server-data` volume, optional `LAUNCHCRAFT_BACKUP_TOKEN`).
+- [x] **Pack Distribution (client-facing, public):**
+  - `GET /packs` (built-pack list), `GET /packs/<id>/manifest.json` and
+    `GET /packs/<id>/cas/objects/<shard>/<hash>` — the exact layout `launchcraft-sync`'s
+    `SyncEngine` fetches, served without auth like a static repo-server (token-gated
+    admin stays intact). Strict hex-hash validation; no path traversal.
+- [x] **Launcher Pack Browser (`gui-client`):**
+  - SKCraft-style Home tab: pulls `GET /packs` automatically on start-up from the
+    configured pack server, shows per-pack state (not installed / installed /
+    requires update) and installs or updates instances in the background via the
+    real `SyncEngine`, recording a `RemoteSync` source in `instance.json`.
 - [x] **End-to-End Tests:**
   - Live HTTP round-trips using the real `WorldArchiver` and `BackupSyncClient`
     (upload → list → download → byte-identical restore), policy refusal, token gating,
     traversal rejection, and root-mount aliases.
+  - A pack built through the console is installed by the real `SyncEngine` straight
+    from the public `/packs` endpoints (manifest + CAS objects over HTTP).
 
 ---
 

@@ -170,6 +170,23 @@ Point an instance's **Backup server URL** at `http://localhost:9090/api`
 toggle makes the API answer `403` to uploads, which clients surface as
 "disabled by server policy".
 
+### Serving Packs to Launchers
+
+The same server also distributes built packs — publicly, exactly like a
+static nginx repo-server (the admin token never gates these routes):
+
+| Route | Purpose |
+| :--- | :--- |
+| `GET /packs` | Installable pack list shown by launcher clients |
+| `GET /packs/<id>/manifest.json` | `SyncEngine` manifest fetch |
+| `GET /packs/<id>/cas/objects/<shard>/<hash>` | CAS blobs |
+
+Point the launcher's **Pack server** (Home tab) at `http://localhost:9090`:
+the pack list is pulled automatically on start-up, shows each pack's
+install state (not installed / installed / requires update), and
+**Install** syncs the pack into `<instances>/<id>/` through
+`launchcraft-sync` in the background.
+
 ---
 
 ## Quickstart & Local Development

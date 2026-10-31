@@ -85,7 +85,8 @@ pub fn set_endpoint(instance_dir: &Path, endpoint: &str) -> Result<Option<String
     }
 
     let config_path = instance_dir.join("instance.json");
-    let text = fs::read_to_string(&config_path).map_err(|e| format!("could not read instance.json: {e}"))?;
+    let text = fs::read_to_string(&config_path)
+        .map_err(|e| format!("could not read instance.json: {e}"))?;
     let mut config: InstanceConfig =
         serde_json::from_str(&text).map_err(|e| format!("could not parse instance.json: {e}"))?;
     config.backup_config.endpoint_url = url.clone();
@@ -134,10 +135,20 @@ pub fn spawn_backup_job(
             for world in targets {
                 match WorldArchiver::create_backup(&dir, &world) {
                     Ok(info) => {
-                        report(&tx, &ctx, format!("📦 Backed up '{}'", info.file_name), false);
+                        report(
+                            &tx,
+                            &ctx,
+                            format!("📦 Backed up '{}'", info.file_name),
+                            false,
+                        );
                         archives.push(info);
                     }
-                    Err(e) => report(&tx, &ctx, format!("⚠ Backup of '{world}' failed: {e}"), false),
+                    Err(e) => report(
+                        &tx,
+                        &ctx,
+                        format!("⚠ Backup of '{world}' failed: {e}"),
+                        false,
+                    ),
                 }
             }
             archives
@@ -152,13 +163,14 @@ pub fn spawn_backup_job(
         }
 
         let names: Vec<String> = made.iter().map(|a| a.file_name.clone()).collect();
-        let uploaded =
-            upload_archives(&instance_dir, &config, &names, &tx, &ctx).await;
+        let uploaded = upload_archives(&instance_dir, &config, &names, &tx, &ctx).await;
         let endpoint = config.endpoint_url.clone().unwrap_or_default();
         let summary = if uploaded == total {
             format!("Backed up {total} world(s); {uploaded} uploaded to {endpoint}.")
         } else {
-            format!("Backed up {total} world(s); {uploaded}/{total} uploaded to {endpoint} — see Logs.")
+            format!(
+                "Backed up {total} world(s); {uploaded}/{total} uploaded to {endpoint} — see Logs."
+            )
         };
         report(&tx, &ctx, summary, true);
     });
@@ -175,8 +187,7 @@ pub fn spawn_upload_job(
 ) {
     rt.spawn(async move {
         let total = archive_names.len();
-        let uploaded =
-            upload_archives(&instance_dir, &config, &archive_names, &tx, &ctx).await;
+        let uploaded = upload_archives(&instance_dir, &config, &archive_names, &tx, &ctx).await;
         let summary = if uploaded == total {
             format!("Uploaded {uploaded}/{total} backup(s) to the server.")
         } else {
@@ -198,11 +209,21 @@ async fn upload_archives(
     ctx: &egui::Context,
 ) -> usize {
     if !config.server_backups_enabled {
-        report(tx, ctx, "Cloud upload skipped: disabled by server policy.".into(), false);
+        report(
+            tx,
+            ctx,
+            "Cloud upload skipped: disabled by server policy.".into(),
+            false,
+        );
         return 0;
     }
     if config.endpoint_url.is_none() {
-        report(tx, ctx, "Cloud upload skipped: no backup endpoint configured.".into(), false);
+        report(
+            tx,
+            ctx,
+            "Cloud upload skipped: no backup endpoint configured.".into(),
+            false,
+        );
         return 0;
     }
 
@@ -225,7 +246,7 @@ async fn upload_archives(
     uploaded
 }
 
-fn report(tx: &Sender<JobEvent>, ctx: &egui::Context, line: String, done: bool) {
+pub(crate) fn report(tx: &Sender<JobEvent>, ctx: &egui::Context, line: String, done: bool) {
     let _ = tx.send(JobEvent { line, done });
     ctx.request_repaint();
 }
@@ -296,7 +317,9 @@ mod tests {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let seen_thread = seen.clone();
         std::thread::spawn(move || {
-            let Ok((mut sock, _)) = listener.accept() else { return };
+            let Ok((mut sock, _)) = listener.accept() else {
+                return;
+            };
             let mut head: Vec<u8> = Vec::new();
             let mut byte = [0u8; 1];
             loop {
@@ -333,7 +356,8 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(format!("{first_line} body_bytes={body_len}"));
-            let _ = sock.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n");
+            let _ = sock
+                .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n");
         });
         (port, seen)
     }
@@ -355,8 +379,9 @@ mod tests {
         let (port, seen) = spawn_mock_backup_server();
         let json = instance_json(true, Some(&format!("http://127.0.0.1:{port}")));
         let dir = make_instance(tmp.path(), &json);
-        let config: BackupConfig =
-            serde_json::from_str::<InstanceConfig>(&json).unwrap().backup_config;
+        let config: BackupConfig = serde_json::from_str::<InstanceConfig>(&json)
+            .unwrap()
+            .backup_config;
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         let ctx = egui::Context::default();
@@ -366,7 +391,9 @@ mod tests {
         let lines = drain_until_done(&rx);
 
         assert!(
-            lines.iter().any(|l| l.contains("Backed up 1 world(s); 1 uploaded")),
+            lines
+                .iter()
+                .any(|l| l.contains("Backed up 1 world(s); 1 uploaded")),
             "unexpected progress: {lines:?}"
         );
 
@@ -399,8 +426,9 @@ mod tests {
         let (port, seen) = spawn_mock_backup_server();
         let json = instance_json(false, Some(&format!("http://127.0.0.1:{port}")));
         let dir = make_instance(tmp.path(), &json);
-        let config: BackupConfig =
-            serde_json::from_str::<InstanceConfig>(&json).unwrap().backup_config;
+        let config: BackupConfig = serde_json::from_str::<InstanceConfig>(&json)
+            .unwrap()
+            .backup_config;
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         let ctx = egui::Context::default();
@@ -410,17 +438,25 @@ mod tests {
         let lines = drain_until_done(&rx);
 
         assert!(
-            lines.iter().any(|l| l.contains("disabled by server policy")),
+            lines
+                .iter()
+                .any(|l| l.contains("disabled by server policy")),
             "expected policy skip: {lines:?}"
         );
-        assert!(seen.lock().unwrap().is_empty(), "server must not be contacted");
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "server must not be contacted"
+        );
         assert_eq!(local_backups(&dir).len(), 1, "local backup still created");
     }
 
     #[test]
     fn set_endpoint_round_trips_instance_json() {
         let tmp = tempdir().unwrap();
-        let dir = make_instance(tmp.path(), &instance_json(true, Some("http://old.example/api")));
+        let dir = make_instance(
+            tmp.path(),
+            &instance_json(true, Some("http://old.example/api")),
+        );
         let read_config = || -> InstanceConfig {
             let text = fs::read_to_string(dir.join("instance.json")).unwrap();
             serde_json::from_str(&text).unwrap()
@@ -430,7 +466,10 @@ mod tests {
         let stored = set_endpoint(&dir, " https://new.example.com/api ").unwrap();
         assert_eq!(stored.as_deref(), Some("https://new.example.com/api"));
         let cfg = read_config();
-        assert_eq!(cfg.backup_config.endpoint_url.as_deref(), Some("https://new.example.com/api"));
+        assert_eq!(
+            cfg.backup_config.endpoint_url.as_deref(),
+            Some("https://new.example.com/api")
+        );
         assert!(cfg.backup_config.server_backups_enabled);
         assert_eq!(cfg.name, "Test Pack");
 
