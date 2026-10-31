@@ -162,6 +162,8 @@ docker compose up -d backup-server
 | `LAUNCHCRAFT_BACKUP_TOKEN` | *(unset)* | When set, every data endpoint requires `Authorization: Bearer` |
 | `LAUNCHCRAFT_MAX_UPLOAD_MB` | `256` | Per-upload size cap |
 | `LAUNCHCRAFT_REPO_DIST` | *(unset)* | Built `./dist` dir auto-registered into the Pack Manager on first boot |
+| `LAUNCHCRAFT_CURSEFORGE_KEY` | *(unset)* | CurseForge Core API key; enables **Add from CurseForge** in the console |
+| `LAUNCHCRAFT_CURSEFORGE_URL` | `https://api.curseforge.com/v1` | CurseForge API root (override for mirrors/tests) |
 
 The launcher needs **one** URL for both jobs: enter `http://localhost:9090`
 as the **Server URL** (Home tab) and world backups go to
@@ -193,6 +195,19 @@ at `<url>/api`, so packs and backups always share one server.
 The **Java Settings** tab lists every Java runtime it finds on the machine
 (JAVA_HOME, `/usr/lib/jvm`, SDKMAN, macOS/Windows install trees) with its
 parsed version — pick one from the list or type a custom path.
+
+### Adding Packs from CurseForge (server-side)
+
+In the console's **Pack Manager**, *Add from CurseForge…* opens a browser
+(search, filters, sort, and a version selector). It is entirely server-side:
+the browser never sees a CurseForge key — the console calls *this* server,
+which proxies the CurseForge Core API. **Add** downloads the chosen modpack
+zip, resolves every referenced mod (`manifest.json` for Forge packs,
+`modrinth.index.json` for Fabric), fetches each into the new pack's `src/`,
+merges the `overrides/`, and builds it — producing a normal Pack Manager pack
+served to launchers exactly like a hand-built one. A missing **required** mod
+aborts the import; optional mods are skipped with a warning. Enable it by
+setting `LAUNCHCRAFT_CURSEFORGE_KEY` (a free key from developers.curseforge.org).
 
 ---
 

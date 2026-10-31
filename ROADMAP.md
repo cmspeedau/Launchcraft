@@ -229,6 +229,15 @@ Phase 1: Workspace & Core Foundation (Done)
     (Old `client.json` `pack_server_url` keys load unchanged via a serde alias.)
   - Java settings list every runtime found on the machine (JAVA_HOME, `/usr/lib/jvm`,
     SDKMAN, macOS/Windows trees) by parsed version — pick one or keep a custom path.
+- [x] **CurseForge Importer (console, server-side):**
+  - Proxied browsing of CurseForge modpacks (`GET /console/curseforge/search|files`):
+    search box, game-version filter, sort dropdown, version selector — the API key
+    (`LAUNCHCRAFT_CURSEFORGE_KEY`) stays server-side; CORS never enters the picture.
+  - One-click **Add**: downloads the modpack zip, reads `manifest.json` (Forge) or
+    `modrinth.index.json` (Fabric), fetches every referenced mod file (bounded
+    concurrency) plus zip-slip-safe `overrides/` into a Pack Manager workspace,
+    registers and builds it. Missing required mods abort; optional mods warn.
+    Tests run against an in-process mock of the Core API.
 - [x] **End-to-End Tests:**
   - Live HTTP round-trips using the real `WorldArchiver` and `BackupSyncClient`
     (upload → list → download → byte-identical restore), policy refusal, token gating,

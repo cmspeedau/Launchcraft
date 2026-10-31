@@ -17,7 +17,7 @@ pub async fn index() -> Html<&'static str> {
     Html(INDEX_HTML)
 }
 
-fn auth(state: &AppState, headers: &HeaderMap) -> Result<(), ApiError> {
+pub(crate) fn auth(state: &AppState, headers: &HeaderMap) -> Result<(), ApiError> {
     if state.is_authorized(headers) {
         Ok(())
     } else {

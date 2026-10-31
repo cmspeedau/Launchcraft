@@ -22,6 +22,8 @@ fn cfg_for(data_dir: &Path) -> ServerConfig {
         token: None,
         repo_dist: None,
         max_upload_mb: 8,
+        curseforge_key: None,
+        curseforge_url: "https://api.curseforge.com/v1".into(),
     }
 }
 

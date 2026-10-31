@@ -8,6 +8,7 @@
 
 pub mod api;
 pub mod console;
+pub mod curseforge;
 pub mod packs;
 pub mod store;
 
@@ -38,6 +39,10 @@ pub struct ServerConfig {
     pub repo_dist: Option<PathBuf>,
     /// Per-upload body cap. (`LAUNCHCRAFT_MAX_UPLOAD_MB`)
     pub max_upload_mb: u32,
+    /// CurseForge Core API key enabling the console's modpack browser. (`LAUNCHCRAFT_CURSEFORGE_KEY`)
+    pub curseforge_key: Option<String>,
+    /// CurseForge API root; swap for a mirror in tests. (`LAUNCHCRAFT_CURSEFORGE_URL`)
+    pub curseforge_url: String,
 }
 
 impl ServerConfig {
@@ -58,6 +63,13 @@ impl ServerConfig {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(256),
+            curseforge_key: std::env::var("LAUNCHCRAFT_CURSEFORGE_KEY")
+                .ok()
+                .filter(|k| !k.is_empty()),
+            curseforge_url: std::env::var("LAUNCHCRAFT_CURSEFORGE_URL")
+                .ok()
+                .filter(|u| !u.is_empty())
+                .unwrap_or_else(|| "https://api.curseforge.com/v1".into()),
         }
     }
 }
@@ -70,6 +82,12 @@ pub struct AppState {
     pub token: Option<String>,
     pub repo_dist: Option<PathBuf>,
     pub max_upload_bytes: usize,
+    /// CurseForge Core API key (`None` disables the modpack browser).
+    pub curse_key: Option<String>,
+    /// CurseForge API root used by the browser.
+    pub curse_base: String,
+    /// Shared outbound HTTP client for the CurseForge proxy.
+    pub http: reqwest::Client,
 }
 
 impl AppState {
@@ -82,6 +100,9 @@ impl AppState {
             token: cfg.token.clone(),
             repo_dist: cfg.repo_dist.clone(),
             max_upload_bytes: cfg.max_upload_mb.max(1) as usize * 1024 * 1024,
+            curse_key: cfg.curseforge_key.clone(),
+            curse_base: cfg.curseforge_url.trim_end_matches('/').to_string(),
+            http: reqwest::Client::new(),
         });
         state.seed_registry_from_repo_dist()?;
         Ok(state)
@@ -262,6 +283,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         )
         .route("/console/packs/:id/check", post(console::packs_check))
         .route("/console/packs/:id/build", post(console::packs_build))
+        .route("/console/curseforge", get(curseforge::status))
+        .route("/console/curseforge/search", get(curseforge::search))
+        .route("/console/curseforge/files", get(curseforge::files))
+        .route("/console/curseforge/add", post(curseforge::add))
         .with_state(state.clone());
     let api: axum::Router<()> = api_routes().with_state(state);
     Router::new()

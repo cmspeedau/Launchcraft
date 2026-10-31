@@ -100,6 +100,10 @@ impl PackBuilder {
                     .map_err(|e| BuilderError::Build(e.to_string()))?;
 
                 let rel_str = rel.to_string_lossy().replace('\\', "/");
+                // pack.json is the builder's own configuration, not a game file.
+                if rel_str == "pack.json" {
+                    continue;
+                }
                 let metadata = entry.metadata()?;
 
                 results.push(ScannedFile {

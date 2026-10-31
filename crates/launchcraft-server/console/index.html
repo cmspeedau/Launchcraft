@@ -70,6 +70,38 @@ table.file-table { width: 100%; border-collapse: collapse; background: var(--bg-
 .switch input:checked + .slider { background: var(--accent); border-color: var(--accent); }
 .switch input:checked + .slider::before { transform: translateX(24px); background: #fff; }
 .empty { padding: 2.5rem; text-align: center; color: var(--text-muted); background: var(--bg-secondary); border: 1px dashed var(--border); border-radius: 8px; }
+/* CurseForge browser overlay (Add from CurseForge). */
+.cf-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.72); display: flex; align-items: center; justify-content: center; z-index: 50; }
+.cf-modal { width: min(980px, 94vw); height: min(660px, 90vh); background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 10px; display: flex; flex-direction: column; padding: 1rem 1.25rem .9rem; }
+.cf-header { display: flex; align-items: center; gap: .75rem; }
+.cf-title { font-size: 1.3rem; font-weight: 700; }
+.cf-close { margin-left: auto; }
+.cf-note { font-style: italic; color: var(--text-muted); font-size: .82rem; text-align: center; margin: .55rem 0 .7rem; }
+.cf-search-row { display: flex; gap: .5rem; align-items: center; }
+.cf-search-row input { font-family: inherit; }
+.cf-filters { display: flex; gap: .5rem; margin-top: .5rem; align-items: center; font-size: .8rem; color: var(--text-muted); }
+.cf-filters input { width: 150px; }
+.cf-body { flex: 1; display: flex; gap: 1rem; margin-top: .75rem; min-height: 0; }
+.cf-list { width: 46%; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-primary); }
+.cf-item { display: flex; gap: .6rem; padding: .5rem .6rem; cursor: pointer; border-bottom: 1px solid var(--border); align-items: center; }
+.cf-item:hover { background: var(--bg-surface); }
+.cf-item.sel { background: var(--bg-surface); box-shadow: inset 3px 0 0 var(--accent); }
+.cf-item img { width: 46px; height: 46px; object-fit: cover; border-radius: 4px; background: var(--bg-surface); flex-shrink: 0; }
+.cf-item .meta { min-width: 0; }
+.cf-item .t { font-weight: 600; font-size: .9rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cf-item .d { color: var(--text-muted); font-size: .78rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cf-detail { flex: 1; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-primary); padding: 1rem; }
+.cf-detail .big { display: flex; gap: .9rem; align-items: center; margin-bottom: .6rem; }
+.cf-detail .big img { width: 64px; height: 64px; border-radius: 6px; background: var(--bg-surface); flex-shrink: 0; }
+.cf-detail .name { font-weight: 700; font-size: 1.05rem; }
+.cf-detail .form-grid { margin-top: .9rem; }
+.cf-footer { display: flex; align-items: center; gap: .75rem; margin-top: .9rem; }
+.cf-footer-right { margin-left: auto; display: flex; align-items: center; gap: .6rem; }
+.cf-verlabel { color: var(--text-muted); font-size: .85rem; }
+.cf-sort { width: auto; }
+.cf-version { min-width: 250px; font-family: inherit; }
+.cf-status { min-height: 1.2em; font-size: .82rem; color: var(--text-muted); margin-top: .35rem; }
+.cf-status.err { color: #f87171; }
 </style>
 </head>
 <body>
@@ -135,6 +167,7 @@ table.file-table { width: 100%; border-collapse: collapse; background: var(--bg-
       <div class="action-group">
         <button class="btn btn-primary" id="pack-new">+ New Pack</button>
         <button class="btn" id="pack-add">Add Existing</button>
+        <button class="btn" id="pack-curse" title="Browse CurseForge and import a modpack">Add from CurseForge…</button>
         <button class="btn" id="pack-refresh">Refresh</button>
       </div>
     </div>
@@ -155,6 +188,49 @@ table.file-table { width: 100%; border-collapse: collapse; background: var(--bg-
     <div id="packs-body"><div class="empty">No pack data.</div></div>
   </section>
 </main>
+
+<!-- CurseForge modpack browser (opens from Pack Manager). -->
+<div class="cf-overlay" id="cf-overlay" style="display:none">
+  <div class="cf-modal">
+    <div class="cf-header">
+      <span class="cf-title">CurseForge</span>
+      <button class="btn cf-close" id="cf-close">✕ Close</button>
+    </div>
+    <p class="cf-note">Note: CurseForge allows creators to block access to third-party tools like this
+      console. As such, you may need to manually download some mods to be able to install a modpack.</p>
+    <div class="cf-search-row">
+      <button class="btn" id="cf-filter">Filter options</button>
+      <input class="field-input" id="cf-search" placeholder="Search and filter…" style="flex:1">
+    </div>
+    <div class="cf-filters" id="cf-filters" style="display:none">
+      <span>Game version</span>
+      <input class="field-input" id="cf-game" placeholder="e.g. 1.20.4">
+      <span>Class</span>
+      <select class="field-input" id="cf-class" style="width:auto">
+        <option value="4471">Modpacks</option>
+      </select>
+    </div>
+    <div class="cf-body">
+      <div class="cf-list" id="cf-list"><div class="empty" style="border:none">Search to list modpacks.</div></div>
+      <div class="cf-detail" id="cf-detail"><div class="empty" style="border:none;background:transparent">Select a modpack to see its versions.</div></div>
+    </div>
+    <div class="cf-footer">
+      <select class="field-input cf-sort" id="cf-sort">
+        <option value="featured">Sort by Featured</option>
+        <option value="popularity">Sort by Popularity</option>
+        <option value="lastupdated">Sort by Last Updated</option>
+        <option value="name">Sort by Name</option>
+      </select>
+      <button class="btn" id="cf-more" style="display:none">Load more</button>
+      <div class="cf-footer-right">
+        <span class="cf-verlabel">Version selected:</span>
+        <select class="field-input cf-version" id="cf-version"></select>
+        <button class="btn btn-primary" id="cf-add" disabled>＋ Add</button>
+      </div>
+    </div>
+    <div class="cf-status" id="cf-status"></div>
+  </div>
+</div>
 
 <script>
 const $ = (id) => document.getElementById(id);
@@ -394,6 +470,149 @@ async function packAction(id, action) {
 
 let packFormMode = null, packFormId = null;
 
+// ---------- CurseForge modpack browser ----------
+const cf = { packs: [], total: 0, sel: null, versions: [], ready: null, shown: 0 };
+function cfStatus(msg, isErr) {
+  const el = $("cf-status");
+  el.textContent = msg;
+  el.className = "cf-status" + (isErr ? " err" : "");
+}
+function slugify(name) {
+  const s = (name || "").toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-").replace(/^[.-]+/, "").slice(0, 40);
+  return s || "curse-pack";
+}
+async function cfOpen() {
+  $("cf-overlay").style.display = "flex";
+  if (cf.ready === null) {
+    try {
+      cf.ready = (await getJSON("/console/curseforge")).configured;
+    } catch (e) { cf.ready = false; cfStatus(e.message, true); }
+  }
+  if (!cf.ready) {
+    $("cf-list").innerHTML = "";
+    $("cf-list").appendChild(el("div", "empty",
+      "CurseForge is not configured on this server.\nSet LAUNCHCRAFT_CURSEFORGE_KEY (a free key from\nhttps://developers.curseforge.org) and restart."));
+    return;
+  }
+  if (!cf.packs.length) cfSearch();
+}
+async function cfSearch(reset = true) {
+  if (!cf.ready) return;
+  if (reset) { cf.packs = []; cf.shown = 0; }
+  const p = new URLSearchParams();
+  const q = $("cf-search").value.trim();
+  const gv = $("cf-game").value.trim();
+  if (q) p.set("q", q);
+  if (gv) p.set("game_version", gv);
+  p.set("sort", $("cf-sort").value);
+  p.set("index", cf.shown);
+  cfStatus("Searching CurseForge…");
+  try {
+    const data = await getJSON("/console/curseforge/search?" + p);
+    cf.packs = cf.packs.concat(data.packs);
+    cf.total = data.total;
+    cf.shown = cf.packs.length;
+    cfRenderList();
+    cfStatus(cf.packs.length ? cf.packs.length + " of " + data.total + " modpack(s)" : "No modpacks found.");
+  } catch (e) { cfStatus("Search failed: " + e.message, true); }
+}
+function cfRenderList() {
+  const box = $("cf-list");
+  box.innerHTML = "";
+  cf.packs.forEach((pack, i) => {
+    const row = el("div", "cf-item" + (cf.sel && cf.sel.id === pack.id ? " sel" : ""));
+    if (pack.icon) {
+      const img = el("img"); img.src = pack.icon; img.referrerPolicy = "no-referrer";
+      img.onerror = () => img.remove();
+      row.appendChild(img);
+    }
+    const meta = el("div", "meta");
+    meta.appendChild(el("div", "t", pack.name));
+    meta.appendChild(el("div", "d", pack.description));
+    row.appendChild(meta);
+    row.onclick = () => cfSelect(i);
+    box.appendChild(row);
+  });
+  $("cf-more").style.display = cf.packs.length && cf.packs.length < cf.total ? "" : "none";
+}
+async function cfSelect(i) {
+  cf.sel = cf.packs[i];
+  cfRenderList();
+  const box = $("cf-detail");
+  box.innerHTML = "";
+  const big = el("div", "big");
+  if (cf.sel.icon) {
+    const img = el("img"); img.src = cf.sel.icon; img.referrerPolicy = "no-referrer";
+    big.appendChild(img);
+  }
+  const head = el("div");
+  head.appendChild(el("div", "name", cf.sel.name));
+  head.appendChild(el("div", "dim", (cf.sel.downloads || 0).toLocaleString() + " downloads"));
+  big.appendChild(head);
+  box.appendChild(big);
+  box.appendChild(el("div", null, cf.sel.description || ""));
+  const grid = el("div", "form-grid");
+  const d1 = el("div"); d1.appendChild(el("label", null, "Pack id (registry)"));
+  const idIn = el("input", "field-input"); idIn.id = "cf-id"; idIn.value = slugify(cf.sel.name);
+  d1.appendChild(idIn);
+  const d2 = el("div"); d2.appendChild(el("label", null, "Title"));
+  const tIn = el("input", "field-input"); tIn.id = "cf-title"; tIn.value = cf.sel.name;
+  d2.appendChild(tIn);
+  grid.appendChild(d1); grid.appendChild(d2);
+  box.appendChild(grid);
+  $("cf-add").disabled = true;
+  $("cf-version").innerHTML = "";
+  const opt = el("option"); opt.textContent = "Loading versions…"; $("cf-version").appendChild(opt);
+  try {
+    const data = await getJSON("/console/curseforge/files?mod_id=" + cf.sel.id);
+    cf.versions = data.versions;
+    $("cf-version").innerHTML = "";
+    cf.versions.forEach((v, vi) => {
+      const o = el("option");
+      o.value = String(vi);
+      o.textContent = [v.name, (v.game_versions || []).slice(0, 2).join(" "), v.size ? humanSize(v.size) : ""]
+        .filter(Boolean).join(" · ");
+      $("cf-version").appendChild(o);
+    });
+    if (!cf.versions.length) {
+      const none = el("option"); none.textContent = "No files"; $("cf-version").appendChild(none);
+    }
+    cfVersionChanged();
+  } catch (e) {
+    $("cf-version").innerHTML = "";
+    const err = el("option"); err.textContent = "Versions failed: " + e.message;
+    $("cf-version").appendChild(err);
+  }
+}
+function cfVersionChanged() {
+  const idIn = $("cf-id");
+  $("cf-add").disabled = !(cf.ready && cf.sel && cf.versions.length && idIn && idIn.value.trim());
+}
+async function cfAdd() {
+  if (!cf.sel || !cf.versions.length) return;
+  const v = cf.versions[Number($("cf-version").value) || 0];
+  const id = ($("cf-id") ? $("cf-id").value : "").trim();
+  const title = ($("cf-title") ? $("cf-title").value : "").trim() || cf.sel.name;
+  if (!id) { cfStatus("Pick a pack id first.", true); return; }
+  $("cf-add").disabled = true;
+  cfStatus("Downloading '" + v.name + "' and every mod file, then building… (large packs take a while)");
+  try {
+    const r = await getJSON("/console/curseforge/add", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mod_id: cf.sel.id, file_id: v.id, id, title }),
+    });
+    cfStatus("✓ Added '" + id + "' v" + r.pack_version + " — " + r.file_count + " files, "
+      + humanSize(r.total_bytes) + (r.warnings.length ? " (" + r.warnings.length + " optional mod(s) skipped)" : ""));
+    status("Imported CurseForge pack '" + id + "' v" + r.pack_version);
+    setTimeout(() => { $("cf-overlay").style.display = "none"; loadCurrent(); }, 900);
+  } catch (e) {
+    cfStatus("Add failed: " + e.message, true);
+    $("cf-add").disabled = false;
+  }
+}
+
+
 const loaders = { dashboard: loadDashboard, backups: loadBackups, policy: loadPolicy, packs: loadPacks };
 let current = "dashboard";
 function loadCurrent() {
@@ -417,6 +636,19 @@ $("pack-add").addEventListener("click", () => openPackForm("add"));
 $("pack-refresh").addEventListener("click", loadCurrent);
 $("pf-save").addEventListener("click", submitPackForm);
 $("pf-cancel").addEventListener("click", closePackForm);
+$("pack-curse").addEventListener("click", cfOpen);
+$("cf-close").addEventListener("click", () => { $("cf-overlay").style.display = "none"; });
+$("cf-search").addEventListener("keydown", (e) => { if (e.key === "Enter") cfSearch(); });
+$("cf-filter").addEventListener("click", () => {
+  const f = $("cf-filters");
+  f.style.display = f.style.display === "none" ? "flex" : "none";
+});
+$("cf-game").addEventListener("change", () => cfSearch());
+$("cf-sort").addEventListener("change", () => cfSearch());
+$("cf-more").addEventListener("click", () => cfSearch(false));
+$("cf-version").addEventListener("change", cfVersionChanged);
+$("cf-add").addEventListener("click", cfAdd);
+$("cf-detail").addEventListener("input", cfVersionChanged);
 loadCurrent();
 </script>
 </body>
