@@ -1,8 +1,7 @@
 pub mod adoptium;
 
-use std::path::{Path, PathBuf};
-use crate::error::RuntimeError;
 use crate::platform::{OperatingSystem, PlatformInfo};
+use std::path::{Path, PathBuf};
 
 pub use adoptium::AdoptiumClient;
 
@@ -23,6 +22,8 @@ impl JavaMajorVersion {
 pub struct JavaRuntimeManager {
     runtimes_dir: PathBuf,
     platform: PlatformInfo,
+    /// Reserved for the (deferred) automatic Java download feature.
+    #[allow(dead_code)]
     adoptium: AdoptiumClient,
 }
 

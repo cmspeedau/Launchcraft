@@ -1,7 +1,7 @@
-use reqwest::Client;
-use serde::Deserialize;
 use crate::error::RuntimeError;
 use crate::platform::PlatformInfo;
+use reqwest::Client;
+use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
 pub struct AdoptiumBinary {
@@ -65,9 +65,11 @@ impl AdoptiumClient {
 
         let res = self.client.get(&url).send().await?;
         let releases: Vec<AdoptiumRelease> = res.json().await?;
-        releases
-            .into_iter()
-            .next()
-            .ok_or_else(|| RuntimeError::JavaNotFound(format!("No Adoptium release found for Java {}", major_version)))
+        releases.into_iter().next().ok_or_else(|| {
+            RuntimeError::JavaNotFound(format!(
+                "No Adoptium release found for Java {}",
+                major_version
+            ))
+        })
     }
 }
