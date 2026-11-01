@@ -269,6 +269,75 @@ async fn ftb_download(
     }
 }
 
+// ---------------------------------------------------------------- loaders
+
+/// Fabric/Quilt meta-style loader profile: libraries spelled every way the
+/// wild has (downloads object, repo+maven path, repo+coordinates), with one
+/// URL repeated across sides to exercise the server's dedupe.
+async fn fabric_profile(
+    State(m): State<Arc<Mock>>,
+    Path((mc, ver)): Path<(String, String)>,
+) -> impl IntoResponse {
+    if mc != "1.21.1" || ver != "0.15.0" {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let base = m.base();
+    Json(serde_json::json!({
+        "id": "fabric-loader-0.15.0-1.21.1",
+        "libraries": [
+            { "name": "net.fabricmc:fabric-loader:0.15.0",
+              "downloads": { "common": { "url": format!("{base}/cdn/fabric-loader.jar"),
+                                         "size": 8 } } },
+            { "name": "org.apache.logging.log4j:log4j-core:2.19.0",
+              "downloads": {
+                  "client": { "url": format!("{base}/cdn/log4j-core.jar"), "size": 9 },
+                  "server": { "url": format!("{base}/cdn/log4j-core.jar"), "size": 9 } } },
+            // fabric-meta dialect: repo url + relative maven path instead
+            // of a downloads object.
+            { "name": "net.fabricmc:sponge-mixin:0.13.3",
+              "url": format!("{base}/mavenrel/"),
+              "maven": "net/fabricmc/sponge-mixin/0.13.3/sponge-mixin.jar" },
+            // fabric-meta dialect as the real meta API spells it: repo url
+            // + bare maven coordinates, path derived by the server.
+            { "name": "net.fabricmc:tiny-mappings-parser:0.3.0+build.17",
+              "url": format!("{base}/mavenrel/") },
+        ],
+    }))
+    .into_response()
+}
+
+/// Repo layout stand-in for the `url`+`maven` dialect.
+async fn fabric_maven(State(m): State<Arc<Mock>>, Path(rest): Path<String>) -> impl IntoResponse {
+    let key = match rest.as_str() {
+        "net/fabricmc/sponge-mixin/0.13.3/sponge-mixin.jar" => "sponge-mixin.jar",
+        "net/fabricmc/tiny-mappings-parser/0.3.0+build.17/tiny-mappings-parser-0.3.0+build.17.jar" => {
+            "tiny-mappings.jar"
+        }
+        _ => return StatusCode::NOT_FOUND.into_response(),
+    };
+    let files = m.files.lock().unwrap();
+    match files.get(key) {
+        Some(bytes) => (StatusCode::OK, bytes.clone()).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+/// Maven repo stand-in: only the exact forge installer coordinates resolve,
+/// so a malformed URL layout from the server shows up as a failed import.
+async fn forge_maven(State(m): State<Arc<Mock>>, Path(rest): Path<String>) -> impl IntoResponse {
+    let key = match rest.as_str() {
+        "net/minecraftforge/forge/1.20.1-47.2.0/forge-1.20.1-47.2.0-installer.jar" => {
+            "forge-installer.jar"
+        }
+        _ => return StatusCode::NOT_FOUND.into_response(),
+    };
+    let files = m.files.lock().unwrap();
+    match files.get(key) {
+        Some(bytes) => (StatusCode::OK, bytes.clone()).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
 // ----------------------------------------------------------------- fixtures
 
 fn zip_build(entries: &[(&str, &[u8])]) -> Vec<u8> {
@@ -298,7 +367,7 @@ fn mrpack(base: &str, version_id: &str, files: &[(&str, &str, &str)]) -> Vec<u8>
         r#"{{ "game": "minecraft", "formatVersion": 1, "versionId": "{version_id}",
             "name": "Modrinth Manor", "author": "Tester",
             "files": [{}],
-            "dependencies": {{ "fabric-loader": "0.15.0" }},
+            "dependencies": {{ "fabric-loader": "0.15.0", "minecraft": "1.21.1" }},
             "gameVersions": ["1.21.1", "fabric"] }}"#,
         entries.join(",")
     );
@@ -397,6 +466,14 @@ async fn spawn_mock() -> (String, Arc<Mock>) {
     files.insert("beta.jar".into(), b"beta-mod-bytes".to_vec());
     files.insert("mr-first.jar".into(), b"mr-first-bytes".to_vec());
     files.insert("mr-third.jar".into(), b"mr-third-bytes".to_vec());
+    files.insert("fabric-loader.jar".into(), b"fabric-loader-bytes".to_vec());
+    files.insert("log4j-core.jar".into(), b"log4j-core-bytes".to_vec());
+    files.insert("sponge-mixin.jar".into(), b"sponge-mixin-bytes".to_vec());
+    files.insert("tiny-mappings.jar".into(), b"tiny-mappings-bytes".to_vec());
+    files.insert(
+        "forge-installer.jar".into(),
+        b"forge-installer-bytes".to_vec(),
+    );
     drop(files);
 
     let app = axum::Router::new()
@@ -409,6 +486,12 @@ async fn spawn_mock() -> (String, Arc<Mock>) {
         .route("/mr/v2/version/:id", get(mr_version_file))
         .route("/ftb/static/:page", get(ftb_static))
         .route("/ftb/modpacks/:dir/:version/:file", get(ftb_download))
+        .route(
+            "/fabric/versions/loader/:mc/:ver/profile/json",
+            get(fabric_profile),
+        )
+        .route("/forge-maven/*rest", get(forge_maven))
+        .route("/mavenrel/*rest", get(fabric_maven))
         .route("/cdn/:name", get(cdn))
         .with_state(mock.clone());
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -431,6 +514,10 @@ async fn spawn_server(
         curseforge_url: cf_base,
         modrinth_url: format!("{mock_base}/mr/v2"),
         ftb_url: format!("{mock_base}/ftb"),
+        fabric_url: format!("{mock_base}/fabric"),
+        quilt_url: format!("{mock_base}/quilt"),
+        forge_url: format!("{mock_base}/forge-maven"),
+        neoforge_url: format!("{mock_base}/neoforge-maven"),
     };
     let state = AppState::new(&cfg).unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -583,6 +670,7 @@ async fn curseforge_search_versions_and_add_build_the_pack() {
     assert_eq!(built["pack_version"], "1.0.0");
     assert_eq!(built["game_version"], "1.20.1");
     assert_eq!(built["loader"], "forge-47.2.0");
+    assert_eq!(built["loader_files"], 1, "forge installer fetched");
 
     let src = data.path().join("packs/adventure/src");
     assert_eq!(
@@ -592,6 +680,11 @@ async fn curseforge_search_versions_and_add_build_the_pack() {
     assert_eq!(
         std::fs::read(src.join("mods/beta mod 2.jar")).unwrap(),
         b"beta-mod-bytes"
+    );
+    // The loader data rides along in the source tree (and thus the build).
+    assert_eq!(
+        std::fs::read(src.join("loader/forge-1.20.1-47.2.0-installer.jar")).unwrap(),
+        b"forge-installer-bytes"
     );
     // overrides merged into src/
     assert_eq!(
@@ -607,6 +700,7 @@ async fn curseforge_search_versions_and_add_build_the_pack() {
     assert_eq!(pack_json["title"], "Adventure Wasteland");
     assert_eq!(pack_json["game_version"], "1.20.1");
     assert_eq!(pack_json["version"], "1.0.0");
+    assert_eq!(pack_json["loader"], "forge-47.2.0");
 
     // The registry row keeps provider provenance for the update button.
     let packs: serde_json::Value = client
@@ -685,6 +779,10 @@ async fn curseforge_update_prunes_dropped_mods() {
     assert_eq!(r["file"], "5002");
     assert_eq!(r["pack_version"], "2.0.0");
     assert_eq!(r["pruned"], 1, "the beta mod dropped by v2 must be pruned");
+    assert_eq!(
+        r["loader_files"], 1,
+        "loader re-fetched with the new version"
+    );
 
     // The tree is now v2; overrides re-merged; the update kept registry title.
     assert!(!src.join("mods/beta mod 2.jar").exists());
@@ -779,6 +877,8 @@ async fn modrinth_add_builds_mrpack_and_update_takes_the_newest() {
     );
     assert_eq!(built["game_version"], "1.21.1");
     assert_eq!(built["pack_version"], "1.0");
+    assert_eq!(built["loader"], "fabric-0.15.0", "read from dependencies");
+    assert_eq!(built["loader_files"], 5, "profile + 4 library jars");
 
     let src = data.path().join("packs/manor/src");
     assert_eq!(
@@ -789,6 +889,36 @@ async fn modrinth_add_builds_mrpack_and_update_takes_the_newest() {
         std::fs::read(src.join("config/manor.cfg")).unwrap(),
         b"manor=1.0"
     );
+    // Fabric profile + libraries, stored under their upstream URL paths —
+    // including one spelled in the fabric-meta `url`+`maven` dialect.
+    assert!(src.join("loader/profile.json").is_file());
+    let host = mock.replace("http://", "");
+    assert_eq!(
+        std::fs::read(src.join(format!("loader/libraries/{host}/cdn/fabric-loader.jar"))).unwrap(),
+        b"fabric-loader-bytes"
+    );
+    assert_eq!(
+        std::fs::read(src.join(format!("loader/libraries/{host}/cdn/log4j-core.jar"))).unwrap(),
+        b"log4j-core-bytes"
+    );
+    assert_eq!(
+        std::fs::read(src.join(format!(
+            "loader/libraries/{host}/mavenrel/net/fabricmc/sponge-mixin/0.13.3/sponge-mixin.jar"
+        )))
+        .unwrap(),
+        b"sponge-mixin-bytes"
+    );
+    // …and the coordinate-only spelling, whose path the server derives.
+    assert_eq!(
+        std::fs::read(src.join(format!("loader/libraries/{host}/mavenrel/net/fabricmc/tiny-mappings-parser/0.3.0+build.17/tiny-mappings-parser-0.3.0+build.17.jar"))).unwrap(),
+        b"tiny-mappings-bytes"
+    );
+    // The built manifest records the loader for launching clients.
+    let manifest: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(data.path().join("packs/manor/dist/manifest.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(manifest["loader"], "fabric-0.15.0");
 
     // Update with no target: the mock's newest (V2) replaces the mod set.
     let res = client
@@ -803,6 +933,10 @@ async fn modrinth_add_builds_mrpack_and_update_takes_the_newest() {
     assert_eq!(r["from_file"], "V1");
     assert_eq!(r["file"], "V2");
     assert_eq!(r["pack_version"], "2.0");
+    assert_eq!(
+        r["loader_files"], 5,
+        "loader re-fetched for the new version"
+    );
 
     assert!(src.join("mods/mr-third.jar").is_file());
     assert_eq!(
@@ -900,6 +1034,10 @@ async fn ftb_baked_add_and_update_replaces_the_workspace() {
     assert_eq!(built["mods_fetched"], 4, "every baked file lands");
     assert_eq!(built["game_version"], "1.12.2");
     assert_eq!(built["pack_version"], "1.0.0");
+    assert_eq!(
+        built["loader_files"], 0,
+        "baked trees carry their own launcher"
+    );
 
     let src = data.path().join("packs/farm/src");
     assert_eq!(
@@ -1023,11 +1161,19 @@ async fn local_upload_imports_a_forge_zip_without_provenance() {
     assert_eq!(built["provider"], "local");
     assert_eq!(built["pack_version"], "3.1");
     assert_eq!(built["game_version"], "1.20.1");
+    assert_eq!(
+        built["loader_files"], 1,
+        "forge installer fetched from maven"
+    );
 
     let src = data.path().join("packs/home/src");
     assert_eq!(
         std::fs::read(src.join("config/home.cfg")).unwrap(),
         b"custom=yes"
+    );
+    assert_eq!(
+        std::fs::read(src.join("loader/forge-1.20.1-47.2.0-installer.jar")).unwrap(),
+        b"forge-installer-bytes"
     );
 
     // Uploaded packs have no upstream: the row shows a null source and the

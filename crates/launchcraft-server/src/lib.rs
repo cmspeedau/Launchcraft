@@ -10,6 +10,7 @@ pub mod api;
 pub mod console;
 pub mod curseforge;
 pub mod ftb;
+pub mod loader;
 pub mod modpacks;
 pub mod modrinth;
 pub mod packs;
@@ -50,6 +51,14 @@ pub struct ServerConfig {
     pub modrinth_url: String,
     /// FTB legacy pack CDN root; keyless provider. (`LAUNCHCRAFT_FTB_URL`)
     pub ftb_url: String,
+    /// Fabric loader meta API root. (`LAUNCHCRAFT_FABRIC_URL`)
+    pub fabric_url: String,
+    /// Quilt loader meta API root. (`LAUNCHCRAFT_QUILT_URL`)
+    pub quilt_url: String,
+    /// Forge Maven root for installer jars. (`LAUNCHCRAFT_FORGE_URL`)
+    pub forge_url: String,
+    /// NeoForge Maven root for installer jars. (`LAUNCHCRAFT_NEOFORGE_URL`)
+    pub neoforge_url: String,
 }
 
 impl ServerConfig {
@@ -85,6 +94,22 @@ impl ServerConfig {
                 .ok()
                 .filter(|u| !u.is_empty())
                 .unwrap_or_else(|| "https://dist.creeper.host/FTB2".into()),
+            fabric_url: std::env::var("LAUNCHCRAFT_FABRIC_URL")
+                .ok()
+                .filter(|u| !u.is_empty())
+                .unwrap_or_else(|| "https://meta.fabricmc.net/v2".into()),
+            quilt_url: std::env::var("LAUNCHCRAFT_QUILT_URL")
+                .ok()
+                .filter(|u| !u.is_empty())
+                .unwrap_or_else(|| "https://meta.quiltmc.org/v3".into()),
+            forge_url: std::env::var("LAUNCHCRAFT_FORGE_URL")
+                .ok()
+                .filter(|u| !u.is_empty())
+                .unwrap_or_else(|| "https://maven.minecraftforge.net".into()),
+            neoforge_url: std::env::var("LAUNCHCRAFT_NEOFORGE_URL")
+                .ok()
+                .filter(|u| !u.is_empty())
+                .unwrap_or_else(|| "https://maven.neoforged.net/releases".into()),
         }
     }
 }
@@ -105,6 +130,14 @@ pub struct AppState {
     pub modrinth_base: String,
     /// FTB legacy CDN root (keyless provider).
     pub ftb_base: String,
+    /// Fabric loader meta API root (loader data fetch).
+    pub fabric_base: String,
+    /// Quilt loader meta API root (loader data fetch).
+    pub quilt_base: String,
+    /// Forge Maven root (installer jar fetch).
+    pub forge_base: String,
+    /// NeoForge Maven root (installer jar fetch).
+    pub neoforge_base: String,
     /// Shared outbound HTTP client for the modpack providers.
     pub http: reqwest::Client,
 }
@@ -123,6 +156,10 @@ impl AppState {
             curse_base: cfg.curseforge_url.trim_end_matches('/').to_string(),
             modrinth_base: cfg.modrinth_url.trim_end_matches('/').to_string(),
             ftb_base: cfg.ftb_url.trim_end_matches('/').to_string(),
+            fabric_base: cfg.fabric_url.trim_end_matches('/').to_string(),
+            quilt_base: cfg.quilt_url.trim_end_matches('/').to_string(),
+            forge_base: cfg.forge_url.trim_end_matches('/').to_string(),
+            neoforge_base: cfg.neoforge_url.trim_end_matches('/').to_string(),
             http: reqwest::Client::builder()
                 .user_agent("LaunchcraftServer/0.1 (self-hosted modpack server)")
                 .build()

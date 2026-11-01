@@ -250,6 +250,13 @@ Phase 1: Workspace & Core Foundation (Done)
     /console/modpacks/upload`, body-gated by `LAUNCHCRAFT_MAX_UPLOAD_MB`): the picked
     archive streams into the identical import pipeline; optional fields supply name/version
     for manifest-less baked trees; uploaded packs register without provenance (no Update).
+  - **Mod loader data on import** — every add/update/upload also fills `src/loader/`:
+    Fabric/Quilt loader `profile.json` + all its library jars (from the loader meta APIs,
+    stored under their upstream URL paths), Forge/NeoForge the official installer jar
+    (from their Mavens); mrpack loader/game versions are read from `dependencies`.
+    The builder records the loader in the pack manifest and the loader files ride the
+    normal CAS distribution, so synced instances can launch. Baked trees are skipped
+    (they ship their own); an unrecognised loader warns instead of failing the import.
 - [x] **End-to-End Tests:**
   - Live HTTP round-trips using the real `WorldArchiver` and `BackupSyncClient`
     (upload → list → download → byte-identical restore), policy refusal, token gating,

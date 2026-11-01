@@ -710,7 +710,8 @@ async function cfAdd() {
       }),
     });
     cfStatus("✓ Added '" + id + "' v" + r.pack_version + " — " + r.file_count + " files, "
-      + humanSize(r.total_bytes) + (r.warnings.length ? " (" + r.warnings.length + " optional mod(s) skipped)" : ""));
+      + humanSize(r.total_bytes) + (r.warnings.length ? " (" + r.warnings.length + " optional mod(s) skipped)" : "")
+      + (r.loader_files ? " · " + r.loader_files + " loader file(s)" : ""));
     status("Imported modpack '" + id + "' v" + r.pack_version);
     setTimeout(() => { $("cf-overlay").style.display = "none"; loadCurrent(); }, 900);
   } catch (e) {
@@ -779,7 +780,8 @@ async function upUpload() {
       body: await up.file.arrayBuffer(),
     });
     upStatus("✓ Added '" + id + "' v" + r.pack_version + " — " + r.file_count + " files, "
-      + humanSize(r.total_bytes) + (r.warnings.length ? " (" + r.warnings.length + " optional mod(s) skipped)" : ""));
+      + humanSize(r.total_bytes) + (r.warnings.length ? " (" + r.warnings.length + " optional mod(s) skipped)" : "")
+      + (r.loader_files ? " · " + r.loader_files + " loader file(s)" : ""));
     status("Imported uploaded pack '" + id + "' v" + r.pack_version);
     setTimeout(() => { $("up-overlay").style.display = "none"; loadCurrent(); }, 900);
   } catch (e) {

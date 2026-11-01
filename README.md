@@ -166,6 +166,10 @@ docker compose up -d backup-server
 | `LAUNCHCRAFT_CURSEFORGE_URL` | `https://api.curseforge.com/v1` | CurseForge API root (override for mirrors/tests) |
 | `LAUNCHCRAFT_MODRINTH_URL` | `https://api.modrinth.com/v2` | Modrinth API root (keyless provider; override for mirrors/tests) |
 | `LAUNCHCRAFT_FTB_URL` | `https://dist.creeper.host/FTB2` | FTB legacy pack CDN root (keyless provider) |
+| `LAUNCHCRAFT_FABRIC_URL` | `https://meta.fabricmc.net/v2` | Fabric loader meta API (loader data fetch) |
+| `LAUNCHCRAFT_QUILT_URL` | `https://meta.quiltmc.org/v3` | Quilt loader meta API (loader data fetch) |
+| `LAUNCHCRAFT_FORGE_URL` | `https://maven.minecraftforge.net` | Forge Maven (installer jar fetch) |
+| `LAUNCHCRAFT_NEOFORGE_URL` | `https://maven.neoforged.net/releases` | NeoForge Maven (installer jar fetch) |
 
 The launcher needs **one** URL for both jobs: enter `http://localhost:9090`
 as the **Server URL** (Home tab) and world backups go to
@@ -237,6 +241,16 @@ import-and-build pipeline — for baked trees the version/game-version fields
 fill in the metadata the archive itself doesn't carry. Size-capped by
 `LAUNCHCRAFT_MAX_UPLOAD_MB` like everything else; uploaded packs simply never
 offer an update, since there is no upstream feed.
+
+Every import also pulls the pack's **mod loader data** into the tree, so a
+synced instance can actually launch: Fabric/Quilt packs get their loader
+`profile.json` plus every library jar from the loader meta API, Forge and
+NeoForge packs get the official installer jar from their Maven — all stored
+under `src/loader/`, packed into the content-addressed distribution and
+recorded in the manifest (`"loader": "fabric-0.14.13"`). Baked FTB trees
+already contain their launcher and are left alone; a loader the server can't
+recognise (liteloader, or a pack naming none) is a warning in the response,
+never a failed import.
 
 ---
 

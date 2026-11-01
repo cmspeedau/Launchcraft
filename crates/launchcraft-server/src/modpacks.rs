@@ -289,6 +289,8 @@ pub async fn add(
     let (bytes, meta) = kind.fetch(&state, &body.project, &body.file).await?;
     let outcome = import_pack_zip(&state, bytes, &src, meta).await?;
     let plan = outcome.plan;
+    let mut warnings = outcome.warnings;
+    let loader_files = fetch_loader(&state, &src, &plan, &mut warnings).await?;
 
     // pack.json + registry + build.
     let title = body
@@ -307,6 +309,7 @@ pub async fn add(
     if !plan.game_version.trim().is_empty() {
         config.game_version = plan.game_version.clone();
     }
+    config.loader = (!plan.loader.trim().is_empty()).then(|| plan.loader.clone());
     std::fs::write(src.join("pack.json"), serde_json::to_vec_pretty(&config)?)?;
 
     registry.add(crate::packs::PackEntry {
@@ -337,7 +340,8 @@ pub async fn add(
         "provider": kind.id(),
         "built": true,
         "mods_fetched": outcome.fetched,
-        "warnings": outcome.warnings,
+        "warnings": warnings,
+        "loader_files": loader_files,
         "game_version": plan.game_version,
         "loader": plan.loader,
         "pack_version": built["pack_version"],
@@ -397,6 +401,8 @@ pub async fn upload(
     };
     let outcome = import_pack_zip(&state, body.to_vec(), &src, Some(meta)).await?;
     let plan = outcome.plan;
+    let mut warnings = outcome.warnings;
+    let loader_files = fetch_loader(&state, &src, &plan, &mut warnings).await?;
 
     let title = q
         .title
@@ -414,6 +420,7 @@ pub async fn upload(
     if !plan.game_version.trim().is_empty() {
         config.game_version = plan.game_version.clone();
     }
+    config.loader = (!plan.loader.trim().is_empty()).then(|| plan.loader.clone());
     std::fs::write(src.join("pack.json"), serde_json::to_vec_pretty(&config)?)?;
 
     registry.add(crate::packs::PackEntry {
@@ -438,7 +445,8 @@ pub async fn upload(
         "provider": "local",
         "built": true,
         "mods_fetched": outcome.fetched,
-        "warnings": outcome.warnings,
+        "warnings": warnings,
+        "loader_files": loader_files,
         "game_version": plan.game_version,
         "loader": plan.loader,
         "pack_version": built["pack_version"],
@@ -518,6 +526,8 @@ pub async fn update(
     } else {
         prune_mods(&src, &outcome.written)?
     };
+    let mut warnings = outcome.warnings;
+    let loader_files = fetch_loader(&state, &src, &outcome.plan, &mut warnings).await?;
 
     // pack.json: keep id + registry title, adopt the new version.
     let pack_json = src.join("pack.json");
@@ -532,6 +542,7 @@ pub async fn update(
     if !outcome.plan.game_version.trim().is_empty() {
         config.game_version = outcome.plan.game_version.clone();
     }
+    config.loader = (!outcome.plan.loader.trim().is_empty()).then(|| outcome.plan.loader.clone());
     std::fs::write(&pack_json, serde_json::to_vec_pretty(&config)?)?;
     registry.packs[idx].source = Some(crate::packs::PackSource {
         provider: source.provider.clone(),
@@ -551,7 +562,8 @@ pub async fn update(
     Ok(Json(json!({
         "id": id, "provider": kind.id(), "updated": true,
         "from_file": source.file, "file": target,
-        "mods_fetched": outcome.fetched, "pruned": pruned, "warnings": outcome.warnings,
+        "mods_fetched": outcome.fetched, "pruned": pruned, "warnings": warnings,
+        "loader_files": loader_files,
         "pack_version": built["pack_version"],
         "file_count": built["file_count"],
         "total_bytes": built["total_bytes"],
@@ -589,6 +601,33 @@ pub(crate) async fn fetch_bytes(state: &AppState, url: &str) -> Result<Vec<u8>, 
         buf.extend_from_slice(&chunk);
     }
     Ok(buf)
+}
+
+/// Pull the mod loader data for a pack into `src/loader/` before it is
+/// built, so synced instances can actually launch. `plan.loader` uses the
+/// provider's naming (`"fabric-0.15.11"`, `"forge-47.2.0"`). Baked packs and
+/// plan with no known loader are skipped (a warning when unrecognised); a
+/// download failure is a hard error, since a half-loaded pack is useless.
+/// Returns how many loader files landed in the tree.
+pub(crate) async fn fetch_loader(
+    state: &AppState,
+    src: &Path,
+    plan: &ImportPlan,
+    warnings: &mut Vec<String>,
+) -> Result<usize, ApiError> {
+    let raw = plan.loader.trim();
+    if raw.is_empty() || plan.baked {
+        return Ok(0);
+    }
+    match crate::loader::LoaderSpec::detect(raw, &plan.game_version) {
+        Some(spec) => crate::loader::fetch(state, src, &spec).await,
+        None => {
+            warnings.push(format!(
+                "unknown mod loader '{raw}' — no loader data was fetched"
+            ));
+            Ok(0)
+        }
+    }
 }
 
 /// What one successful import produced.
@@ -803,6 +842,34 @@ fn prune_mods(src: &Path, written: &[String]) -> Result<usize, ApiError> {
 
 /// Read `manifest.json` (Forge/CurseForge), `modrinth.index.json`
 /// (mrpack) or a baked `minecraft/` tree (FTB) from an unpacked archive.
+/// A `dependencies` entry of an mrpack, with version-range operators
+/// shaved off (`"^0.15.0"`, `">=1.19 <2.0"` → `"0.15.0"`, `"1.19"`).
+/// `LoaderSpec::detect` vetoes whatever nonsense survives.
+fn mrpack_dep(m: &Value, key: &str) -> Option<String> {
+    let v = m.get("dependencies")?.get(key)?.as_str()?;
+    let v = v
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .trim_matches(|c: char| "><=~^()[];,".contains(c));
+    (!v.is_empty()).then(|| v.to_string())
+}
+
+/// mrpack `dependencies` → the plan loader string (`"fabric-0.15.0"`).
+fn mrpack_loader(m: &Value) -> Option<String> {
+    for (key, kind) in [
+        ("fabric-loader", "fabric"),
+        ("quilt-loader", "quilt"),
+        ("neoforge", "neoforge"),
+        ("forge", "forge"),
+    ] {
+        if let Some(v) = mrpack_dep(m, key) {
+            return Some(format!("{kind}-{v}"));
+        }
+    }
+    None
+}
+
 fn read_plan(staging: &Path, meta: Option<FallbackMeta>) -> Result<ImportPlan, ApiError> {
     if staging.join("manifest.json").is_file() {
         let text = std::fs::read_to_string(staging.join("manifest.json"))?;
@@ -904,26 +971,28 @@ fn read_plan(staging: &Path, meta: Option<FallbackMeta>) -> Result<ImportPlan, A
                 .and_then(Value::as_str)
                 .unwrap_or("1.0")
                 .to_string(),
-            game_version: m
-                .get("gameVersions")
-                .and_then(Value::as_array)
-                .and_then(|g| {
-                    g.iter()
-                        .filter_map(|v| v.as_str())
-                        .find(|v| v.starts_with("1."))
-                })
-                .unwrap_or_default()
-                .to_string(),
-            loader: m
-                .get("gameVersions")
-                .and_then(Value::as_array)
-                .and_then(|g| {
-                    g.iter().filter_map(|v| v.as_str()).find(|v| {
-                        v.contains("fabric") || v.contains("forge") || v.contains("neoforge")
+            game_version: mrpack_dep(&m, "minecraft").unwrap_or_else(|| {
+                m.get("gameVersions")
+                    .and_then(Value::as_array)
+                    .and_then(|g| {
+                        g.iter()
+                            .filter_map(|v| v.as_str())
+                            .find(|v| v.starts_with("1."))
                     })
-                })
-                .unwrap_or_default()
-                .to_string(),
+                    .unwrap_or_default()
+                    .to_string()
+            }),
+            loader: mrpack_loader(&m).unwrap_or_else(|| {
+                m.get("gameVersions")
+                    .and_then(Value::as_array)
+                    .and_then(|g| {
+                        g.iter().filter_map(|v| v.as_str()).find(|v| {
+                            v.contains("fabric") || v.contains("forge") || v.contains("neoforge")
+                        })
+                    })
+                    .unwrap_or_default()
+                    .to_string()
+            }),
             mods,
             overrides: staging.join("overrides"),
             baked: false,
