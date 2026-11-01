@@ -6,7 +6,9 @@ use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
 use eframe::egui;
-use launchcraft_core::instance::{InstanceConfig, InstanceSource, RepositoryConfig};
+use launchcraft_core::instance::{
+    InstanceConfig, InstanceSource, ModLoaderConfig, RepositoryConfig,
+};
 use launchcraft_core::paths::LauncherPaths;
 use launchcraft_sync::{CasStore, SyncEngine};
 use serde::{Deserialize, Serialize};
@@ -225,6 +227,16 @@ pub fn prepare_instance(
         });
     config.name = pack.title.clone();
     config.minecraft_version = pack.game_version.clone();
+    // Record the pack's loader so PLAY can map the instance onto the
+    // matching `<mc>-<loader>-<version>` install from the Versions tab.
+    if let Some((kind, version)) =
+        crate::game::parse_loader_tag(pack.loader.as_deref().unwrap_or_default())
+    {
+        config.mod_loader = Some(ModLoaderConfig {
+            loader_type: kind.id().to_string(),
+            loader_version: version,
+        });
+    }
     config.source = InstanceSource::RemoteSync {
         repo_url: String::new(), // filled by install_repo_url(); stored for display only
         pack_id: pack.id.clone(),

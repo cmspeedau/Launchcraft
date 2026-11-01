@@ -11,12 +11,15 @@ eframe = "0.27"
 launchcraft-core = { path = "../crates/launchcraft-core" }
 launchcraft-backup = { path = "../crates/launchcraft-backup" }
 launchcraft-sync = { path = "../crates/launchcraft-sync" }
+launchcraft-auth = { path = "../crates/launchcraft-auth" }
+launchcraft-runtime = { path = "../crates/launchcraft-runtime" }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 reqwest = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
+image = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

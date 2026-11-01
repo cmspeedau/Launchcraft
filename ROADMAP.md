@@ -264,6 +264,36 @@ Phase 1: Workspace & Core Foundation (Done)
   - A pack built through the console is installed by the real `SyncEngine` straight
     from the public `/packs` endpoints (manifest + CAS objects over HTTP).
 
+### Phase 9: Client Login, Version Store & Launch (Complete)
+- [x] **Microsoft Chain Hardening (`launchcraft-auth`):**
+  - XSTS `xuid` captured into the account (feeds `${auth_xuid}` at launch); the
+    token endpoint tolerates `authorization_pending` responses that omit token
+    fields; `finish_device_login` drives poll → consent → full chain in one call;
+    every upstream base URL injectable for tests (axum-mocked whole chain, incl.
+    refresh and game-not-owned paths).
+- [x] **Version & Asset Pipeline (`launchcraft-runtime::meta`):**
+  - Piston-meta version list + profile download with `inheritsFrom` chain loading;
+    client jar, asset index (sha1-gated) and objects (content-addressed, 16-way
+    concurrent) into the standard `versions/` + `assets/` layout; applicable
+    libraries and natives classifiers into a shared maven-layout `libraries/`;
+    writes are tmp-then-rename and sha1-checked, caches skip by size/hash.
+  - Fabric/Quilt loader installs (`<mc>-<loader>-<version>` overlay profiles,
+    all three loader library dialects — `downloads`, `url`+`maven`, bare maven
+    coordinates — normalized to identical paths the server's loader store uses).
+- [x] **Launch Planning & Game Process:**
+  - Merged profile → real launch: overlay-first classpath, zip-slip-safe natives
+    extraction, rule-gated modern `arguments` and legacy `minecraftArguments`
+    both fully substituted (`${auth_*}`, `${classpath}`, `${natives_directory}`…);
+    `ProcessSpawner` now drains stdout **and** stderr so chatty clients can't
+    deadlock on a full pipe.
+- [x] **Accounts + Versions tabs (`gui-client`):**
+  - Device-code card with copyable code and auto-opened sign-in page; multiple
+    accounts with set-active/refresh/remove and skin-face avatars decoded
+    client-side from the PNG; PLAY streams the game's console into the Logs tab.
+  - Versions tab: releases/snapshots filter, fabric/quilt loader picker, live
+    install progress through the shared job channel; `sha1` tamper and 404
+    install paths covered by axum-mocked end-to-end tests.
+
 ---
 
 ## 4. Architectural Safeguards

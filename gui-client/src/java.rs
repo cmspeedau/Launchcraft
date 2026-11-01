@@ -19,6 +19,17 @@ impl JavaInstall {
     }
 }
 
+/// Default file/URL opener program for this OS (`xdg-open`, `open`, `explorer`).
+pub fn open_program() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "explorer"
+    } else if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    }
+}
+
 /// Detect a Java executable on the current system.
 pub fn detect_java() -> Option<String> {
     if let Ok(java_home) = std::env::var("JAVA_HOME") {

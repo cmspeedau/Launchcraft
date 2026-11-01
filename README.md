@@ -39,6 +39,12 @@ Launchcraft is designed for speed, security, and portability. It replaces tradit
 - **Secure Microsoft & Xbox Authentication:**
   - OAuth 2.0 Device Code and Loopback flow.
   - Xbox Live and XSTS authentication token exchange with secure local credential rotation.
+- **Full Minecraft Install & Launch Pipeline:**
+  - Mojang version manifest, profile inheritance (`inheritsFrom`), sha1-verified
+    client jar / asset / library downloads into a shared `versions/`, `assets/`,
+    `libraries/` store — plus Fabric and Quilt overlays, all from the egui client.
+  - PLAY builds the real launch command (rule-filtered classpath, natives,
+    substituted `${auth_*}` arguments) and streams the game log.
 - **Headless Pack Builder CLI (`launchcraft-builder`):**
   - Standalone CLI for pack creators and server operators.
   - Scans modpack source trees, computes CAS blobs, and emits synchronized `manifest.json` distributions ready for S3 / CDN hosting.
@@ -251,6 +257,42 @@ recorded in the manifest (`"loader": "fabric-0.14.13"`). Baked FTB trees
 already contain their launcher and are left alone; a loader the server can't
 recognise (liteloader, or a pack naming none) is a warning in the response,
 never a failed import.
+
+### Playing: Microsoft Login, Versions & Launch (Launcher Client)
+
+The egui client now plays the game it installs, PrismLauncher-style:
+
+- **Accounts tab** — *Sign in with Microsoft* runs the full device-code chain
+  (Microsoft → Xbox Live → XSTS → Minecraft services, entitlement check,
+  profile + skin) without leaving the launcher: show the one-time code, open
+  the sign-in page, and the account lands in `config/accounts.json` with its
+  skin face as avatar. Multiple accounts, one active; tokens refresh
+  automatically when a launch finds them close to expiry.
+- **Versions tab** — the real Mojang version manifest (releases or
+  snapshots, filter box), and a **vanilla / Fabric / Quilt** choice with the
+  loader's published versions for the selected game. Installs land in the
+  standard layout — `versions/<id>/`, `assets/{indexes,objects}/`, shared
+  maven-layout `libraries/` — every file sha1-verified, cached, and skipped on
+  re-install; loader overlays are installed as `<mc>-<loader>-<version>`
+  profiles that inherit the vanilla layer.
+- **PLAY (Home tab)** — resolves the selected pack (or version/instance),
+  refreshes the token if needed, and launches: rule-filtered classpath
+  (overlay libraries first, client jar last), natives unpacked zip-slip-safe,
+  modern rule-gated `arguments` *and* legacy `minecraftArguments` fully
+  substituted. The game's own console output streams into the Logs tab.
+
+Forge/NeoForge packs keep shipping their loader inside the synced instance
+(the server stores the official installer); launching those through the
+version manager is still on the roadmap.
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `LAUNCHCRAFT_META_URL` | `https://piston-meta.mojang.com` | Version-manifest / profile base |
+| `LAUNCHCRAFT_FABRIC_URL` | `https://meta.fabricmc.net/v2` | Fabric loader meta base |
+| `LAUNCHCRAFT_QUILT_URL` | `https://meta.quiltmc.org/v3` | Quilt loader meta base |
+| `LAUNCHCRAFT_RESOURCES_URL` | `https://resources.download.minecraft.net` | Asset object host |
+| `LAUNCHCRAFT_MS_AUTH_URL` | `https://login.microsoftonline.com/consumers` | Microsoft authority base |
+| `LAUNCHCRAFT_CLIENT_ID` | built-in public client | Azure app id for the device flow |
 
 ---
 
