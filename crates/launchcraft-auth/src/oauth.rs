@@ -1,8 +1,7 @@
-use std::time::Duration;
 use chrono::{Duration as ChronoDuration, Utc};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
+use std::time::Duration;
 
 use crate::error::{AuthError, Result};
 use crate::models::{LaunchcraftAccount, MinecraftProfile};
@@ -22,13 +21,36 @@ pub struct DeviceCodeResponse {
 
 #[derive(Debug, Deserialize)]
 struct TokenResponse {
-    access_token: String,
-    refresh_token: String,
-    expires_in: i64,
+    // Pending/error responses omit these fields entirely, so nothing here
+    // may be required.
+    #[serde(default)]
+    access_token: Option<String>,
+    #[serde(default)]
+    refresh_token: Option<String>,
     #[serde(default)]
     error: Option<String>,
     #[serde(default)]
     error_description: Option<String>,
+}
+
+impl TokenResponse {
+    /// Fold the endpoint's error field into `AuthError`, or yield the
+    /// token pair when the response actually carried tokens.
+    fn into_tokens(self) -> Result<(String, String)> {
+        if let Some(err) = self.error {
+            return Err(AuthError::OAuth {
+                error: err,
+                description: self.error_description.unwrap_or_default(),
+            });
+        }
+        match (self.access_token, self.refresh_token) {
+            (Some(access), Some(refresh)) => Ok((access, refresh)),
+            _ => Err(AuthError::OAuth {
+                error: "invalid_token_response".to_string(),
+                description: "token endpoint omitted access_token/refresh_token".to_string(),
+            }),
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -67,6 +89,9 @@ struct DisplayClaims {
 #[derive(Debug, Deserialize)]
 struct XuiClaim {
     uhs: String,
+    /// Xbox user id (`xid`); present on XSTS responses.
+    #[serde(default, rename = "xid")]
+    xuid: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -109,13 +134,65 @@ struct McItem {
     name: String,
 }
 
+/// Upstream endpoints for the whole MS → XBL → XSTS → Minecraft chain.
+/// Production is `Default`; integration tests point every hop at a local
+/// mock server.
+#[derive(Debug, Clone)]
+pub struct AuthEndpoints {
+    /// Azure AD "authority" (tenant base), e.g.
+    /// `https://login.microsoftonline.com/consumers`.
+    pub ms_authority: String,
+    /// `https://user.auth.xboxlive.com`
+    pub xbox_live: String,
+    /// `https://xsts.auth.xboxlive.com`
+    pub xsts: String,
+    /// `https://api.minecraftservices.com`
+    pub minecraft_services: String,
+}
+
+impl Default for AuthEndpoints {
+    fn default() -> Self {
+        Self {
+            ms_authority: "https://login.microsoftonline.com/consumers".to_string(),
+            xbox_live: "https://user.auth.xboxlive.com".to_string(),
+            xsts: "https://xsts.auth.xboxlive.com".to_string(),
+            minecraft_services: "https://api.minecraftservices.com".to_string(),
+        }
+    }
+}
+
+impl AuthEndpoints {
+    fn trim(url: &str) -> String {
+        url.trim_end_matches('/').to_string()
+    }
+}
+
 pub struct MicrosoftAuthClient {
     http: Client,
     client_id: String,
+    endpoints: AuthEndpoints,
 }
 
 impl MicrosoftAuthClient {
     pub fn new(client_id: Option<String>) -> Self {
+        Self::with_endpoints(client_id, AuthEndpoints::default())
+    }
+
+    /// Client pointed at custom endpoints (tests, proxies); the
+    /// `LAUNCHCRAFT_MS_AUTH_URL` environment variable overrides the
+    /// Microsoft authority base for all instances when set.
+    pub fn with_endpoints(client_id: Option<String>, endpoints: AuthEndpoints) -> Self {
+        let mut endpoints = AuthEndpoints {
+            ms_authority: AuthEndpoints::trim(&endpoints.ms_authority),
+            xbox_live: AuthEndpoints::trim(&endpoints.xbox_live),
+            xsts: AuthEndpoints::trim(&endpoints.xsts),
+            minecraft_services: AuthEndpoints::trim(&endpoints.minecraft_services),
+        };
+        if let Ok(base) = std::env::var("LAUNCHCRAFT_MS_AUTH_URL") {
+            if !base.is_empty() {
+                endpoints.ms_authority = AuthEndpoints::trim(&base);
+            }
+        }
         let http = Client::builder()
             .timeout(Duration::from_secs(30))
             .build()
@@ -124,12 +201,13 @@ impl MicrosoftAuthClient {
         Self {
             http,
             client_id: client_id.unwrap_or_else(|| DEFAULT_CLIENT_ID.to_string()),
+            endpoints,
         }
     }
 
     /// Initiate device code flow
     pub async fn initiate_device_flow(&self) -> Result<DeviceCodeResponse> {
-        let url = "https://login.microsoftonline.com/consumers/oauth2/v2.0/devicecode";
+        let url = format!("{}/oauth2/v2.0/devicecode", self.endpoints.ms_authority);
         let params = [
             ("client_id", self.client_id.as_str()),
             ("scope", "XboxLive.signin offline_access"),
@@ -150,7 +228,7 @@ impl MicrosoftAuthClient {
 
     /// Poll for OAuth token via device code flow
     pub async fn poll_device_code_token(&self, device_code: &str) -> Result<(String, String)> {
-        let url = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token";
+        let url = format!("{}/oauth2/v2.0/token", self.endpoints.ms_authority);
         let params = [
             ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
             ("client_id", self.client_id.as_str()),
@@ -159,20 +237,52 @@ impl MicrosoftAuthClient {
 
         let res = self.http.post(url).form(&params).send().await?;
         let token_resp: TokenResponse = res.json().await?;
+        token_resp.into_tokens()
+    }
 
-        if let Some(err) = token_resp.error {
-            return Err(AuthError::OAuth {
-                error: err,
-                description: token_resp.error_description.unwrap_or_default(),
-            });
+    /// Drive a started device-code flow to completion: polls at the
+    /// advertised interval until the user authorizes (or the code expires),
+    /// then runs the full Minecraft chain. `on_pending` runs after each
+    /// still-waiting poll, for callers that show progress.
+    pub async fn finish_device_login(
+        &self,
+        flow: &DeviceCodeResponse,
+        mut on_pending: impl FnMut(&str),
+    ) -> Result<LaunchcraftAccount> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(flow.expires_in);
+        let mut interval = Duration::from_secs(flow.interval.max(1));
+        loop {
+            if std::time::Instant::now() >= deadline {
+                return Err(AuthError::OAuth {
+                    error: "expired_token".to_string(),
+                    description: "device code expired before it was authorized".to_string(),
+                });
+            }
+            tokio::time::sleep(interval).await;
+            match self.poll_device_code_token(&flow.device_code).await {
+                Ok((ms_token, refresh)) => {
+                    return self.authenticate_minecraft(&ms_token, &refresh).await;
+                }
+                Err(AuthError::OAuth { error, description }) => match error.as_str() {
+                    "authorization_pending" => on_pending(&description),
+                    "slow_down" => {
+                        interval += Duration::from_secs(5);
+                        on_pending(&description);
+                    }
+                    _ => return Err(AuthError::OAuth { error, description }),
+                },
+                Err(e) => return Err(e),
+            }
         }
-
-        Ok((token_resp.access_token, token_resp.refresh_token))
     }
 
     /// Exchange authorization code from loopback/redirect for tokens
-    pub async fn exchange_auth_code(&self, code: &str, redirect_uri: &str) -> Result<(String, String)> {
-        let url = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token";
+    pub async fn exchange_auth_code(
+        &self,
+        code: &str,
+        redirect_uri: &str,
+    ) -> Result<(String, String)> {
+        let url = format!("{}/oauth2/v2.0/token", self.endpoints.ms_authority);
         let params = [
             ("client_id", self.client_id.as_str()),
             ("grant_type", "authorization_code"),
@@ -183,20 +293,12 @@ impl MicrosoftAuthClient {
 
         let res = self.http.post(url).form(&params).send().await?;
         let token_resp: TokenResponse = res.json().await?;
-
-        if let Some(err) = token_resp.error {
-            return Err(AuthError::OAuth {
-                error: err,
-                description: token_resp.error_description.unwrap_or_default(),
-            });
-        }
-
-        Ok((token_resp.access_token, token_resp.refresh_token))
+        token_resp.into_tokens()
     }
 
     /// Refresh Microsoft OAuth tokens
     pub async fn refresh_oauth_token(&self, refresh_token: &str) -> Result<(String, String)> {
-        let url = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token";
+        let url = format!("{}/oauth2/v2.0/token", self.endpoints.ms_authority);
         let params = [
             ("client_id", self.client_id.as_str()),
             ("grant_type", "refresh_token"),
@@ -206,24 +308,20 @@ impl MicrosoftAuthClient {
 
         let res = self.http.post(url).form(&params).send().await?;
         let token_resp: TokenResponse = res.json().await?;
-
-        if let Some(err) = token_resp.error {
-            return Err(AuthError::OAuth {
-                error: err,
-                description: token_resp.error_description.unwrap_or_default(),
-            });
-        }
-
-        Ok((token_resp.access_token, token_resp.refresh_token))
+        token_resp.into_tokens()
     }
 
     /// Complete full Minecraft authentication chain from Microsoft OAuth access token
-    pub async fn authenticate_minecraft(&self, ms_access_token: &str, refresh_token: &str) -> Result<LaunchcraftAccount> {
+    pub async fn authenticate_minecraft(
+        &self,
+        ms_access_token: &str,
+        refresh_token: &str,
+    ) -> Result<LaunchcraftAccount> {
         // Step 1: Xbox Live authentication
         let (xbl_token, uhs) = self.authenticate_xbox_live(ms_access_token).await?;
 
         // Step 2: XSTS authentication
-        let xsts_token = self.authenticate_xsts(&xbl_token).await?;
+        let (xsts_token, xuid) = self.authenticate_xsts(&xbl_token).await?;
 
         // Step 3: Minecraft Services Login
         let (mc_token, expires_in) = self.login_with_xbox(&xsts_token, &uhs).await?;
@@ -235,7 +333,11 @@ impl MicrosoftAuthClient {
         let profile = self.get_profile(&mc_token).await?;
 
         let expires_at = Utc::now() + ChronoDuration::seconds(expires_in);
-        let skin_url = profile.skins.into_iter().find(|s| s.state == "ACTIVE").map(|s| s.url);
+        let skin_url = profile
+            .skins
+            .into_iter()
+            .find(|s| s.state == "ACTIVE")
+            .map(|s| s.url);
 
         Ok(LaunchcraftAccount {
             uuid: profile.id,
@@ -244,17 +346,23 @@ impl MicrosoftAuthClient {
             access_token: mc_token,
             expires_at,
             skin_url,
+            xuid,
         })
     }
 
     /// Full account refresh: refreshes MS OAuth token and completes MC auth chain
-    pub async fn refresh_account(&self, account: &LaunchcraftAccount) -> Result<LaunchcraftAccount> {
-        let (new_ms_token, new_refresh_token) = self.refresh_oauth_token(&account.refresh_token).await?;
-        self.authenticate_minecraft(&new_ms_token, &new_refresh_token).await
+    pub async fn refresh_account(
+        &self,
+        account: &LaunchcraftAccount,
+    ) -> Result<LaunchcraftAccount> {
+        let (new_ms_token, new_refresh_token) =
+            self.refresh_oauth_token(&account.refresh_token).await?;
+        self.authenticate_minecraft(&new_ms_token, &new_refresh_token)
+            .await
     }
 
     async fn authenticate_xbox_live(&self, ms_token: &str) -> Result<(String, String)> {
-        let url = "https://user.auth.xboxlive.com/user/authenticate";
+        let url = format!("{}/user/authenticate", self.endpoints.xbox_live);
         let req = XboxLiveAuthRequest {
             properties: XboxLiveProperties {
                 auth_method: "RPS".to_string(),
@@ -283,8 +391,8 @@ impl MicrosoftAuthClient {
         Ok((body.token, uhs))
     }
 
-    async fn authenticate_xsts(&self, xbl_token: &str) -> Result<String> {
-        let url = "https://xsts.auth.xboxlive.com/xsts/authorize";
+    async fn authenticate_xsts(&self, xbl_token: &str) -> Result<(String, String)> {
+        let url = format!("{}/xsts/authorize", self.endpoints.xsts);
         let req = XstsAuthRequest {
             properties: XstsProperties {
                 sandbox_id: "RETAIL".to_string(),
@@ -301,11 +409,20 @@ impl MicrosoftAuthClient {
         }
 
         let body: XboxLiveAuthResponse = res.json().await?;
-        Ok(body.token)
+        let xuid = body
+            .display_claims
+            .xui
+            .first()
+            .map(|x| x.xuid.clone())
+            .unwrap_or_default();
+        Ok((body.token, xuid))
     }
 
     async fn login_with_xbox(&self, xsts_token: &str, uhs: &str) -> Result<(String, i64)> {
-        let url = "https://api.minecraftservices.com/authentication/login_with_xbox";
+        let url = format!(
+            "{}/authentication/login_with_xbox",
+            self.endpoints.minecraft_services
+        );
         let req = McLoginRequest {
             identity_token: format!("XBL3.0 x={};{}", uhs, xsts_token),
         };
@@ -321,7 +438,7 @@ impl MicrosoftAuthClient {
     }
 
     async fn check_game_ownership(&self, mc_token: &str) -> Result<()> {
-        let url = "https://api.minecraftservices.com/entitlements/mcstore";
+        let url = format!("{}/entitlements/mcstore", self.endpoints.minecraft_services);
         let res = self.http.get(url).bearer_auth(mc_token).send().await?;
 
         if !res.status().is_success() {
@@ -330,9 +447,10 @@ impl MicrosoftAuthClient {
         }
 
         let ownership: McOwnershipResponse = res.json().await?;
-        let owns_game = ownership.items.iter().any(|item| {
-            item.name == "product_minecraft" || item.name == "game_minecraft"
-        });
+        let owns_game = ownership
+            .items
+            .iter()
+            .any(|item| item.name == "product_minecraft" || item.name == "game_minecraft");
 
         if !owns_game {
             return Err(AuthError::GameNotOwned);
@@ -342,7 +460,7 @@ impl MicrosoftAuthClient {
     }
 
     pub async fn get_profile(&self, mc_token: &str) -> Result<MinecraftProfile> {
-        let url = "https://api.minecraftservices.com/minecraft/profile";
+        let url = format!("{}/minecraft/profile", self.endpoints.minecraft_services);
         let res = self.http.get(url).bearer_auth(mc_token).send().await?;
 
         if !res.status().is_success() {

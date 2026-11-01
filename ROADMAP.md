@@ -76,6 +76,8 @@ Phase 1: Workspace & Core Foundation (Done)
    ├── Phase 6: Headless Pack Builder & Docker Image (Done)
    │
    └── Phase 7: Save Game Backups & World Cloud Sync (Done)
+         │
+         └── Phase 8: Server Console `launchcraft-server` (Done)
 ```
 
 ---
@@ -188,6 +190,117 @@ Phase 1: Workspace & Core Foundation (Done)
 - [x] **Desktop UI & IPC Integration:**
   - Worlds file viewer tab in `launchcraft-desktop`.
   - Action buttons for: "Backup World (ZIP)", "Upload to Server", "Download World ZIP", and "Restore Backup".
+
+---
+
+### Phase 8: Server Console (`launchcraft-server`) (Complete)
+*Objective: Server-side counterpart to the backup engine — a backup store API and admin GUI for server operators.*
+
+- [x] **Backup API (`crates/launchcraft-server`):**
+  - Implements the exact contract `launchcraft-backup::BackupSyncClient` speaks:
+    `POST /backups/upload?filename=…` (raw zip body) and `GET /backups/download?filename=…`,
+    mounted at both `/api/*` and the root, with optional `Authorization: Bearer` auth.
+  - JSON listing (`GET /backups`) and console-side deletion (`DELETE /backups/<name>`);
+    BLAKE3 checksum sidecars per archive, atomic writes, strict filename allowlist (no traversal).
+  - Server-side policy store (`policy.json`): while uploads are disabled the API answers `403`,
+    mirroring the client-side refusal.
+- [x] **Admin Console (embedded single-page GUI):**
+  - Dashboard (archive count, storage used, newest upload, per-world counts), Backups
+    (list / download / delete with checksums), Policy toggle, and a Pack Manager
+    (pack registry with New Pack / Add Existing / Modify / Build / Check, SKCraft-style).
+- [x] **Deployment:**
+  - `docker/Dockerfile.server` and a `backup-server` Compose service (port 9090,
+    `./server-data` volume, optional `LAUNCHCRAFT_BACKUP_TOKEN`).
+- [x] **Pack Distribution (client-facing, public):**
+  - `GET /packs` (built-pack list), `GET /packs/<id>/manifest.json` and
+    `GET /packs/<id>/cas/objects/<shard>/<hash>` — the exact layout `launchcraft-sync`'s
+    `SyncEngine` fetches, served without auth like a static repo-server (token-gated
+    admin stays intact). Strict hex-hash validation; no path traversal.
+- [x] **Launcher Pack Browser (`gui-client`):**
+  - SKCraft-style Home tab: pulls `GET /packs` automatically on start-up from the
+    configured server, shows per-pack state (not installed / installed /
+    requires update) and installs or updates instances in the background via the
+    real `SyncEngine`, recording a `RemoteSync` source in `instance.json`.
+  - Live progress bar during install/update/reinstall, driven by the `SyncEngine`
+    byte/file progress callbacks.
+  - One **Server URL** (Home tab) drives packs and backups: installs store
+    `<url>/api` as the instance backup endpoint and saving the URL re-points every
+    instance; the Worlds tab shows the shared endpoint instead of editing one per instance.
+    (Old `client.json` `pack_server_url` keys load unchanged via a serde alias.)
+  - Java settings list every runtime found on the machine (JAVA_HOME, `/usr/lib/jvm`,
+    SDKMAN, macOS/Windows trees) by parsed version — pick one or keep a custom path.
+- [x] **Modpack Browser (console, server-side — CurseForge · Modrinth · FTB):**
+  - One unified endpoint set (`GET /console/modpacks|search|versions`,
+    `POST /console/modpacks/add|update/:id`) behind one console browser; the CurseForge
+    key (`LAUNCHCRAFT_CURSEFORGE_KEY`) stays server-side and Modrinth/FTB need no key —
+    CORS never enters the picture.
+  - One-click **Add** rebuilds any provider's archive into a Pack Manager workspace:
+    `manifest.json` (Forge) references resolved through the Core API, `modrinth.index.json`
+    / `.mrpack` files fetched by their direct URLs, and legacy FTB baked `minecraft/`
+    trees copied wholesale; `overrides/` merge zip-slip-safe, bounded concurrency, then
+    register + build. Missing required mods abort; optional mods warn. Tests run against
+    an in-process mock of all three upstreams.
+  - **Updates** for imported packs (Prism-style): the registry stores
+    `{provider, project, file}` provenance, so a pack row gets an "Update" action —
+    re-imports the chosen (default newest) version in place, prunes dropped mods for
+    manifest packs, wipes and replaces baked FTB trees, re-merges overrides, bumps
+    `pack.json`'s version and rebuilds. Same-version requests report `{updated: false}`;
+    hand-built packs are refused with 400.
+  - **Upload Modpack…** — a sibling window of the browser (`POST
+    /console/modpacks/upload`, body-gated by `LAUNCHCRAFT_MAX_UPLOAD_MB`): the picked
+    archive streams into the identical import pipeline; optional fields supply name/version
+    for manifest-less baked trees; uploaded packs register without provenance (no Update).
+  - **Mod loader data on import** — every add/update/upload also fills `src/loader/`:
+    Fabric/Quilt loader `profile.json` + all its library jars (from the loader meta APIs,
+    stored under their upstream URL paths), Forge/NeoForge the official installer jar
+    (from their Mavens); mrpack loader/game versions are read from `dependencies`.
+    The builder records the loader in the pack manifest and the loader files ride the
+    normal CAS distribution, so synced instances can launch. Baked trees are skipped
+    (they ship their own); an unrecognised loader warns instead of failing the import.
+- [x] **End-to-End Tests:**
+  - Live HTTP round-trips using the real `WorldArchiver` and `BackupSyncClient`
+    (upload → list → download → byte-identical restore), policy refusal, token gating,
+    traversal rejection, and root-mount aliases.
+  - A pack built through the console is installed by the real `SyncEngine` straight
+    from the public `/packs` endpoints (manifest + CAS objects over HTTP).
+
+### Phase 9: Client Login, Version Store & Launch (Complete)
+- [x] **Microsoft Chain Hardening (`launchcraft-auth`):**
+  - XSTS `xuid` captured into the account (feeds `${auth_xuid}` at launch); the
+    token endpoint tolerates `authorization_pending` responses that omit token
+    fields; `finish_device_login` drives poll → consent → full chain in one call;
+    every upstream base URL injectable for tests (axum-mocked whole chain, incl.
+    refresh and game-not-owned paths).
+- [x] **Version & Asset Pipeline (`launchcraft-runtime::meta`):**
+  - Piston-meta version list + profile download with `inheritsFrom` chain loading;
+    client jar, asset index (sha1-gated) and objects (content-addressed, 16-way
+    concurrent) into the standard `versions/` + `assets/` layout; applicable
+    libraries and natives classifiers into a shared maven-layout `libraries/`;
+    writes are tmp-then-rename and sha1-checked, caches skip by size/hash.
+  - Fabric/Quilt loader installs (`<mc>-<loader>-<version>` overlay profiles,
+    all three loader library dialects — `downloads`, `url`+`maven`, bare maven
+    coordinates — normalized to identical paths the server's loader store uses).
+- [x] **Launch Planning & Game Process:**
+  - Merged profile → real launch: overlay-first classpath, zip-slip-safe natives
+    extraction, rule-gated modern `arguments` and legacy `minecraftArguments`
+    both fully substituted (`${auth_*}`, `${classpath}`, `${natives_directory}`…);
+    `ProcessSpawner` now drains stdout **and** stderr so chatty clients can't
+    deadlock on a full pipe.
+- [x] **Accounts + Versions tabs (`gui-client`):**
+  - Device-code card with copyable code and auto-opened sign-in page; multiple
+    accounts with set-active/refresh/remove and skin-face avatars decoded
+    client-side from the PNG; PLAY streams the game's console into the Logs tab.
+  - Versions tab: releases/snapshots filter, fabric/quilt loader picker, live
+    install progress through the shared job channel; `sha1` tamper and 404
+    install paths covered by axum-mocked end-to-end tests.
+- [x] **Automatic Java Provisioning (`launchcraft-runtime::java`):**
+  - Profile-required Java majors (`javaVersion.majorVersion`) resolved at PLAY:
+    managed runtime → configured Java if new enough → Adoptium assets lookup +
+    streamed sha256-verified Temurin download extracted into
+    `runtimes/java-<major>` (tar.gz and zip, zip-slip-safe, exec bits restored,
+    macOS `Contents/Home` layout supported); progress streams through the shared
+    job channel and failures degrade to the configured Java. Provisioned
+    runtimes show up in the Java tab; live test against api.adoptium.net.
 
 ---
 

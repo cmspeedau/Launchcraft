@@ -1,10 +1,15 @@
 pub mod adoptium;
 
-use std::path::{Path, PathBuf};
 use crate::error::RuntimeError;
 use crate::platform::{OperatingSystem, PlatformInfo};
+use std::path::{Path, PathBuf};
 
-pub use adoptium::AdoptiumClient;
+pub use adoptium::{
+    AdoptiumBinary, AdoptiumClient, AdoptiumPackage, AdoptiumRelease, JavaDownloadProgress,
+    JavaInstallPhase, JavaProgress,
+};
+
+use adoptium::find_java_executable;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum JavaMajorVersion {
@@ -28,11 +33,7 @@ pub struct JavaRuntimeManager {
 
 impl JavaRuntimeManager {
     pub fn new<P: AsRef<Path>>(runtimes_dir: P) -> Self {
-        Self {
-            runtimes_dir: runtimes_dir.as_ref().to_path_buf(),
-            platform: PlatformInfo::current(),
-            adoptium: AdoptiumClient::new(),
-        }
+        Self::with_platform(runtimes_dir, PlatformInfo::current())
     }
 
     pub fn with_platform<P: AsRef<Path>>(runtimes_dir: P, platform: PlatformInfo) -> Self {
@@ -41,6 +42,23 @@ impl JavaRuntimeManager {
             platform,
             adoptium: AdoptiumClient::new(),
         }
+    }
+
+    /// Manager whose Adoptium client points at a custom API base (tests, mirrors).
+    pub fn with_adoptium<P: AsRef<Path>>(
+        runtimes_dir: P,
+        platform: PlatformInfo,
+        adoptium: AdoptiumClient,
+    ) -> Self {
+        Self {
+            runtimes_dir: runtimes_dir.as_ref().to_path_buf(),
+            platform,
+            adoptium,
+        }
+    }
+
+    pub fn runtimes_dir(&self) -> &Path {
+        &self.runtimes_dir
     }
 
     pub fn get_runtime_dir(&self, version: JavaMajorVersion) -> PathBuf {
@@ -67,6 +85,36 @@ impl JavaRuntimeManager {
 
     pub fn is_runtime_installed(&self, version: JavaMajorVersion) -> bool {
         self.get_java_binary(version).exists()
+    }
+
+    /// Executable of a previously provisioned managed runtime, for any major
+    /// version (not just the enum's known set).
+    pub fn provisioned_java(&self, major_version: u32) -> Option<PathBuf> {
+        let dir = self.runtimes_dir.join(format!("java-{}", major_version));
+        find_java_executable(&dir).filter(|p| p.is_file())
+    }
+
+    /// Return the managed `java` executable for `major_version`, downloading
+    /// and extracting a Temurin JDK into `runtimes_dir/java-<major>` when it
+    /// is not installed yet (Prism-style automatic runtime provisioning).
+    pub async fn ensure_java(
+        &self,
+        major_version: u32,
+        progress: Option<&JavaProgress>,
+    ) -> Result<PathBuf, RuntimeError> {
+        if let Some(existing) = self.provisioned_java(major_version) {
+            if let Some(progress) = progress {
+                progress(JavaDownloadProgress {
+                    downloaded: 0,
+                    total: Some(0),
+                    phase: JavaInstallPhase::Done,
+                });
+            }
+            return Ok(existing);
+        }
+        self.adoptium
+            .install_into(major_version, &self.runtimes_dir, &self.platform, progress)
+            .await
     }
 
     pub fn find_system_java(&self) -> Option<PathBuf> {

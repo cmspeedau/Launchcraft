@@ -11,8 +11,14 @@ pub enum RuntimeError {
     #[error("JSON deserialization error: {0}")]
     Json(#[from] serde_json::Error),
 
+    #[error("Zip archive error: {0}")]
+    Zip(#[from] zip::result::ZipError),
+
     #[error("Java runtime not found: {0}")]
     JavaNotFound(String),
+
+    #[error("Java install error: {0}")]
+    JavaInstall(String),
 
     #[error("Unsupported platform: {0}")]
     UnsupportedPlatform(String),

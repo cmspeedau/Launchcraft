@@ -1,15 +1,21 @@
 //! Launchcraft GUI client
 //! A client-side launcher GUI with world save backups (local + server) and Java settings.
 
+mod accounts;
+mod game;
 mod java;
+mod packs;
 mod saves;
+mod versions;
 
 use eframe::egui;
 use launchcraft_core::instance::BackupConfig;
 use launchcraft_core::paths::LauncherPaths;
+use launchcraft_runtime::meta::LoaderKind;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
+pub use versions::LoaderChoice;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JavaSettings {
@@ -60,9 +66,35 @@ pub struct App {
     pub tab: Tab,
     pub instances: Vec<saves::InstanceEntry>,
     pub instance: Option<usize>,
-    pub endpoint_input: String,
-    endpoint_for: Option<usize>,
     pub busy: bool,
+    // Remote pack browser (SKCraft-style): list pulled from a launchcraft-server.
+    // One Server URL serves both packs (`/packs`) and backups (`/api`).
+    pub client_settings: packs::ClientSettings,
+    pub server_url_input: String,
+    pub packs: Vec<packs::PackInfo>,
+    pub packs_loading: bool,
+    pub packs_error: Option<String>,
+    pub selected_pack: Option<usize>,
+    packs_tx: Sender<Result<Vec<packs::PackInfo>, String>>,
+    packs_rx: Receiver<Result<Vec<packs::PackInfo>, String>>,
+    pending_pack_rescan: bool,
+    // Live fraction of the running install/update job (packs report one).
+    job_progress: Option<f32>,
+    // Installed Java runtimes found on this machine (Java tab dropdown).
+    java_versions: Vec<java::JavaInstall>,
+    java_scanned: bool,
+    // Microsoft accounts + Minecraft version store (Accounts / Versions tabs).
+    accounts: accounts::AccountState,
+    versions: versions::VersionState,
+    // Live game process bookkeeping for the PLAY button.
+    game_running: bool,
+    game_pid: Option<u32>,
+    game_tx: Sender<game::GameEvent>,
+    game_rx: Receiver<game::GameEvent>,
+    game_log_tx: Sender<String>,
+    game_log_rx: Receiver<String>,
+    refresh_tx: Sender<launchcraft_auth::LaunchcraftAccount>,
+    refresh_rx: Receiver<launchcraft_auth::LaunchcraftAccount>,
     runtime: tokio::runtime::Runtime,
     ctx: egui::Context,
     events_tx: Sender<saves::JobEvent>,
@@ -72,6 +104,8 @@ pub struct App {
 #[derive(PartialEq)]
 pub enum Tab {
     Home,
+    Versions,
+    Accounts,
     Worlds,
     Java,
     Logs,
@@ -80,23 +114,109 @@ pub enum Tab {
 impl App {
     pub fn new(paths: LauncherPaths, ctx: egui::Context) -> Self {
         let (events_tx, events_rx) = std::sync::mpsc::channel();
+        let (packs_tx, packs_rx) = std::sync::mpsc::channel();
+        let (game_tx, game_rx) = std::sync::mpsc::channel();
+        let (game_log_tx, game_log_rx) = std::sync::mpsc::channel();
+        let (refresh_tx, refresh_rx) = std::sync::mpsc::channel();
         let runtime = tokio::runtime::Runtime::new().expect("failed to start async runtime");
         let instances = saves::list_instances(&paths.instances);
-        Self {
+        let client_settings = packs::ClientSettings::load(&paths.config);
+        let server_url_input = client_settings.server_url.clone().unwrap_or_default();
+        let accounts = accounts::AccountState::new(&paths.config, &ctx);
+        let mut versions_state = versions::VersionState::new();
+        versions_state.rescan_installed(&paths);
+        let mut app = Self {
             java: JavaSettings::load(&paths.config.join("settings.json")),
             status: "Ready".into(),
             log: Vec::new(),
             tab: Tab::Home,
             instance: instances.first().map(|_| 0),
-            endpoint_input: String::new(),
-            endpoint_for: None,
             busy: false,
+            client_settings,
+            server_url_input,
+            packs: Vec::new(),
+            packs_loading: false,
+            packs_error: None,
+            selected_pack: None,
+            packs_tx,
+            packs_rx,
+            pending_pack_rescan: false,
+            // Live fraction of the running install/update job (packs report one).
+            job_progress: None,
+            java_versions: Vec::new(),
+            java_scanned: false,
+            accounts,
+            versions: versions_state,
+            game_running: false,
+            game_pid: None,
+            game_tx,
+            game_rx,
+            game_log_tx,
+            game_log_rx,
+            refresh_tx,
+            refresh_rx,
             paths,
             instances,
             runtime,
             ctx,
             events_tx,
             events_rx,
+        };
+        // SKCraft behavior: pull the pack list automatically on start-up.
+        if let Some(url) = app.client_settings.server_url.clone() {
+            app.refresh_packs(&url);
+        }
+        app.accounts.request_avatar(&app.runtime, &app.ctx.clone());
+        app
+    }
+
+    /// Fetch the server pack list (background; never blocks the UI).
+    fn refresh_packs(&mut self, url: &str) {
+        self.packs_loading = true;
+        self.packs_error = None;
+        packs::spawn_fetch(
+            &self.runtime,
+            self.ctx.clone(),
+            self.packs_tx.clone(),
+            url.to_string(),
+        );
+    }
+
+    /// Persist the shared server URL and point every instance's backup
+    /// endpoint at it (`<url>/api`) — packs and backups on one server.
+    fn save_server_url(&mut self, url: String) {
+        self.client_settings.server_url = if url.trim().is_empty() {
+            None
+        } else {
+            Some(url.clone())
+        };
+        if let Err(e) = self.client_settings.save(&self.paths.config) {
+            self.set_status(format!("Could not save server URL: {e}"));
+        }
+        let Some(endpoint) = packs::backup_endpoint(&url) else {
+            return;
+        };
+        let mut updated = 0usize;
+        let mut failures = Vec::new();
+        for entry in &mut self.instances {
+            if entry.config.backup_config.endpoint_url.as_deref() == Some(endpoint.as_str()) {
+                continue;
+            }
+            match saves::set_endpoint(&entry.dir, &endpoint) {
+                Ok(u) => {
+                    entry.config.backup_config.endpoint_url = u;
+                    updated += 1;
+                }
+                Err(e) => failures.push(e),
+            }
+        }
+        for e in failures {
+            self.set_status(format!("Backup endpoint update failed: {e}"));
+        }
+        if updated > 0 {
+            self.set_status(format!(
+                "Backup server → {endpoint} ({updated} instance(s) updated)."
+            ));
         }
     }
 
@@ -127,9 +247,94 @@ impl App {
         while let Ok(event) = self.events_rx.try_recv() {
             self.status = event.line.clone();
             self.push_log(event.line);
+            if let Some(frac) = event.progress {
+                self.job_progress = Some(frac);
+            }
             if event.done {
                 self.busy = false;
+                self.job_progress = None;
+                if self.pending_pack_rescan {
+                    self.pending_pack_rescan = false;
+                    self.instances = saves::list_instances(&self.paths.instances);
+                }
+                // Version installs report through the same channel.
+                if self.versions.installing.take().is_some() {
+                    self.versions.rescan_installed(&self.paths);
+                }
             }
+        }
+    }
+
+    /// Move background pack-list fetch results into the browser state.
+    fn drain_pack_events(&mut self) {
+        while let Ok(event) = self.packs_rx.try_recv() {
+            self.packs_loading = false;
+            match event {
+                Ok(list) => {
+                    self.packs_error = None;
+                    let count = list.len();
+                    self.packs = list;
+                    if !matches!(self.selected_pack, Some(i) if i < count) {
+                        self.selected_pack = if count > 0 { Some(0) } else { None };
+                    }
+                }
+                Err(e) => self.packs_error = Some(e),
+            }
+        }
+    }
+
+    /// Finish logins/refreshes that completed in the background.
+    fn drain_account_events(&mut self) {
+        for result in self.accounts.drain() {
+            match result {
+                Ok(account) => {
+                    let name = account.username.clone();
+                    self.accounts.store_account(account);
+                    self.accounts
+                        .request_avatar(&self.runtime, &self.ctx.clone());
+                    self.set_status(format!("Signed in as {name}."));
+                }
+                Err(e) => {
+                    self.accounts.login_error = Some(e.clone());
+                    self.set_status(format!("Sign-in failed: {e}"));
+                }
+            }
+        }
+        self.accounts.drain_avatar(&self.ctx);
+        // Tokens refreshed by the PLAY path persist here.
+        while let Ok(account) = self.refresh_rx.try_recv() {
+            self.accounts.store_account(account);
+        }
+    }
+
+    /// Game lifecycle + console output from the launch task.
+    fn drain_game_events(&mut self) {
+        while let Ok(event) = self.game_rx.try_recv() {
+            match event {
+                game::GameEvent::Started { pid } => {
+                    self.busy = false;
+                    self.game_running = true;
+                    self.game_pid = pid;
+                    self.set_status(match pid {
+                        Some(p) => format!("Minecraft is running (pid {p})."),
+                        None => "Minecraft is running.".to_string(),
+                    });
+                }
+                game::GameEvent::Failed(e) => {
+                    self.busy = false;
+                    self.game_running = false;
+                    self.game_pid = None;
+                    self.set_status(e);
+                }
+                game::GameEvent::Stopped => {
+                    self.game_running = false;
+                    self.game_pid = None;
+                    self.set_status("Minecraft closed.");
+                }
+            }
+        }
+        while let Ok(line) = self.game_log_rx.try_recv() {
+            self.push_log(line);
         }
     }
 
@@ -163,12 +368,21 @@ impl App {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_events();
+        self.drain_pack_events();
+        self.drain_account_events();
+        self.drain_game_events();
+        if self.game_running {
+            // Keep the UI alive for game log lines without busy-repainting.
+            ctx.request_repaint_after(std::time::Duration::from_millis(250));
+        }
 
         egui::TopBottomPanel::top("nav").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("🚀 Launchcraft");
                 ui.separator();
                 ui.selectable_value(&mut self.tab, Tab::Home, "Home");
+                ui.selectable_value(&mut self.tab, Tab::Versions, "Versions");
+                ui.selectable_value(&mut self.tab, Tab::Accounts, "Accounts");
                 ui.selectable_value(&mut self.tab, Tab::Worlds, "World Saves");
                 ui.selectable_value(&mut self.tab, Tab::Java, "Java Settings");
                 ui.selectable_value(&mut self.tab, Tab::Logs, "Logs");
@@ -185,6 +399,8 @@ impl eframe::App for App {
         });
         egui::CentralPanel::default().show(ctx, |ui| match self.tab {
             Tab::Home => self.draw_home(ui),
+            Tab::Versions => self.draw_versions(ui),
+            Tab::Accounts => self.draw_accounts(ui),
             Tab::Worlds => self.draw_worlds(ui),
             Tab::Java => self.draw_java(ui),
             Tab::Logs => self.draw_logs(ui),
@@ -194,18 +410,503 @@ impl eframe::App for App {
 
 impl App {
     fn draw_home(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(20.0);
-        ui.heading("Welcome to Launchcraft");
-        ui.label("A modern Minecraft launcher.");
-        ui.label(format!("Data directory: {}", self.paths.root.display()));
-        ui.add_space(20.0);
-        if ui
-            .add(egui::Button::new("▶  PLAY").min_size(egui::vec2(160.0, 44.0)))
-            .clicked()
-        {
-            self.set_status("Launching game… (launcher backend not wired up yet)");
-            // TODO: wire into launchcraft-runtime to start the game process
+        let mut fetch: Option<String> = None;
+
+        // Left pane: the server's pack list, SKCraft-style.
+        egui::SidePanel::left("pack_list")
+            .default_width(260.0)
+            .show_inside(ui, |ui| {
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.label("Server URL:");
+                    ui.text_edit_singleline(&mut self.server_url_input);
+                });
+                ui.horizontal(|ui| {
+                    if ui.button("Check for updates").clicked() {
+                        let url = self.server_url_input.clone();
+                        self.save_server_url(url.clone());
+                        if !url.trim().is_empty() {
+                            fetch = Some(url);
+                        }
+                    }
+                    if self.packs_loading {
+                        ui.spinner();
+                    }
+                });
+                ui.separator();
+                if let Some(err) = &self.packs_error {
+                    ui.colored_label(egui::Color32::from_rgb(240, 100, 100), err);
+                }
+                if self.packs.is_empty() && !self.packs_loading && self.packs_error.is_none() {
+                    ui.weak(
+                        "No packs yet.\n\nSet the Server URL of a\nlaunchcraft-server above, then\nCheck for updates.",
+                    );
+                }
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    for (i, pack) in self.packs.iter().enumerate() {
+                        let local = packs::local_pack_version(&self.paths.instances, &pack.id);
+                        let state = packs::classify(&pack.pack_version, local.as_deref());
+                        let label = match state {
+                            packs::PackState::Installed => pack.title.clone(),
+                            other => format!("{}  ({})", pack.title, other.label()),
+                        };
+                        ui.selectable_value(&mut self.selected_pack, Some(i), label);
+                    }
+                });
+            });
+
+        // Right pane: selected pack details + actions.
+        egui::CentralPanel::default().show_inside(ui, |ui| {
+            ui.add_space(4.0);
+            let selected = self.selected_pack.and_then(|i| self.packs.get(i).cloned());
+            match selected {
+                Some(pack) => {
+                    let local = packs::local_pack_version(&self.paths.instances, &pack.id);
+                    let state = packs::classify(&pack.pack_version, local.as_deref());
+                    ui.heading(&pack.title);
+                    ui.label(format!(
+                        "Minecraft {} · v{} · {} file(s) · {}",
+                        pack.game_version,
+                        pack.pack_version,
+                        pack.file_count,
+                        packs::human_size(pack.total_bytes)
+                    ));
+                    ui.label(format!(
+                        "Loader: {} · Local: {}",
+                        pack.loader.clone().unwrap_or_else(|| "vanilla".into()),
+                        local.unwrap_or_else(|| "not installed".into())
+                    ));
+                    ui.add_space(12.0);
+                    let button = match state {
+                        packs::PackState::NotInstalled => "⬇  Install",
+                        packs::PackState::UpdateAvailable => "⬇  Update",
+                        packs::PackState::Installed => "↻  Reinstall",
+                    };
+                    ui.add_enabled_ui(!self.busy, |ui| {
+                        if ui
+                            .add(egui::Button::new(button).min_size(egui::vec2(160.0, 36.0)))
+                            .clicked()
+                        {
+                            let url = self.server_url_input.clone();
+                            self.save_server_url(url.clone());
+                            packs::spawn_install(
+                                &self.runtime,
+                                self.ctx.clone(),
+                                self.events_tx.clone(),
+                                self.paths.clone(),
+                                url,
+                                pack.clone(),
+                            );
+                            self.busy = true;
+                            self.pending_pack_rescan = true;
+                            self.set_status(format!("Installing '{}'…", pack.title));
+                        }
+                    });
+                    if self.busy {
+                        ui.add_space(12.0);
+                        match self.job_progress {
+                            Some(frac) => {
+                                ui.add(
+                                    egui::ProgressBar::new(frac)
+                                        .text(self.status.clone())
+                                        .desired_width(280.0),
+                                );
+                            }
+                            None => {
+                                ui.horizontal(|ui| {
+                                    ui.spinner();
+                                    ui.label(self.status.clone());
+                                });
+                            }
+                        }
+                    }
+                }
+                None => {
+                    ui.add_space(20.0);
+                    ui.heading("Welcome to Launchcraft");
+                    ui.label("Select a pack on the left to install it.");
+                }
+            }
+            ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+                ui.horizontal(|ui| {
+                    let label = if self.game_running {
+                        "⏹  RUNNING"
+                    } else {
+                        "▶  PLAY"
+                    };
+                    let button = egui::Button::new(label).min_size(egui::vec2(160.0, 44.0));
+                    if ui
+                        .add_enabled(!self.busy && !self.game_running, button)
+                        .clicked()
+                    {
+                        self.start_play();
+                    }
+                    if let Some(pid) = self.game_pid.filter(|_| self.game_running) {
+                        ui.weak(format!("pid {pid}"));
+                    }
+                });
+            });
+        });
+
+        if let Some(url) = fetch {
+            self.refresh_packs(&url);
+            self.set_status("Checking pack server…");
         }
+    }
+
+    /// Resolve what PLAY means right now (selected pack → its instance and
+    /// version; otherwise the Versions tab selection) and start the game.
+    fn start_play(&mut self) {
+        let Some(account) = self.accounts.active_account().cloned() else {
+            self.set_status("Sign in with Microsoft on the Accounts tab before playing.");
+            return;
+        };
+        let (version_id, instance_dir) =
+            match self.selected_pack.and_then(|i| self.packs.get(i).cloned()) {
+                Some(pack) => {
+                    let dir = self.paths.instances.join(&pack.id);
+                    match game::pack_launch_id(&pack.game_version, pack.loader.as_deref()) {
+                        Ok(id) => (id, dir),
+                        Err(e) => {
+                            self.set_status(e);
+                            return;
+                        }
+                    }
+                }
+                None => match self.versions.selected.clone() {
+                    Some(id) => (id, self.paths.instances.join("default")),
+                    None => match self.selected_instance() {
+                        Some(entry) => match game::instance_launch_id(&entry.config) {
+                            Ok(id) => (id, entry.dir.clone()),
+                            Err(e) => {
+                                self.set_status(e);
+                                return;
+                            }
+                        },
+                        None => {
+                            self.set_status(
+                                "Select a pack on Home, a version on the Versions tab, \
+                                 or an instance on the World Saves tab.",
+                            );
+                            return;
+                        }
+                    },
+                },
+            };
+        let mc = launchcraft_runtime::MinecraftClient::new(self.paths.clone());
+        if !mc.is_installed(&version_id) {
+            self.set_status(format!(
+                "{version_id} is not installed yet — install it on the Versions tab first."
+            ));
+            return;
+        }
+        let req = game::LaunchRequest {
+            paths: self.paths.clone(),
+            version_id: version_id.clone(),
+            instance_dir,
+            java_binary: PathBuf::from(self.java.java_path.clone()),
+            min_memory_mb: self.java.min_memory_mb,
+            max_memory_mb: self.java.max_memory_mb,
+            jvm_extra: self
+                .java
+                .jvm_args
+                .split_whitespace()
+                .map(String::from)
+                .collect(),
+            account,
+        };
+        game::spawn_launch(
+            &self.runtime,
+            self.ctx.clone(),
+            self.events_tx.clone(),
+            self.game_tx.clone(),
+            self.game_log_tx.clone(),
+            self.refresh_tx.clone(),
+            req,
+        );
+        self.busy = true;
+        self.set_status(format!("Preparing {version_id}…"));
+    }
+
+    fn draw_versions(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Minecraft Versions");
+        ui.separator();
+
+        // Lazy first fetch when the tab opens.
+        if self.versions.list.is_none() && !self.versions.loading {
+            self.versions.loading = true;
+            let tx = self.versions.list_tx();
+            versions::spawn_list(&self.runtime, self.ctx.clone(), tx, self.paths.clone());
+        }
+        self.versions.drain();
+
+        ui.horizontal(|ui| {
+            if ui.button("Refresh list").clicked() {
+                self.versions.loading = true;
+                let tx = self.versions.list_tx();
+                versions::spawn_list(&self.runtime, self.ctx.clone(), tx, self.paths.clone());
+            }
+            if self.versions.loading {
+                ui.spinner();
+            }
+            ui.separator();
+            ui.label("Filter:");
+            ui.text_edit_singleline(&mut self.versions.filter);
+            ui.checkbox(&mut self.versions.show_snapshots, "Snapshots");
+        });
+        if let Some(err) = self.versions.error.clone() {
+            ui.colored_label(egui::Color32::from_rgb(240, 100, 100), err);
+        }
+
+        let rows: Vec<(String, bool)> = self
+            .versions
+            .visible()
+            .iter()
+            .map(|v| {
+                let installed = self
+                    .versions
+                    .installed
+                    .iter()
+                    .any(|i| i == &v.id || i.starts_with(&format!("{}-", v.id)));
+                (v.id.clone(), installed)
+            })
+            .collect();
+        ui.weak(format!("{} versions", rows.len()));
+        egui::ScrollArea::vertical()
+            .id_source("versions_list")
+            .max_height(220.0)
+            .show(ui, |ui| {
+                for (id, installed) in &rows {
+                    let label = if *installed {
+                        format!("✅ {id}")
+                    } else {
+                        id.clone()
+                    };
+                    ui.selectable_value(&mut self.versions.selected, Some(id.clone()), label);
+                }
+            });
+
+        ui.separator();
+        let selected = self.versions.selected.clone();
+        match selected {
+            Some(id) => {
+                ui.horizontal(|ui| {
+                    ui.label(format!("Install {id} with:"));
+                    ui.selectable_value(&mut self.versions.loader, LoaderChoice::None, "vanilla");
+                    if ui
+                        .selectable_value(&mut self.versions.loader, LoaderChoice::Fabric, "Fabric")
+                        .changed()
+                    {
+                        self.versions.request_loaders(
+                            &self.runtime,
+                            self.ctx.clone(),
+                            self.paths.clone(),
+                            LoaderKind::Fabric,
+                        );
+                    }
+                    if ui
+                        .selectable_value(&mut self.versions.loader, LoaderChoice::Quilt, "Quilt")
+                        .changed()
+                    {
+                        self.versions.request_loaders(
+                            &self.runtime,
+                            self.ctx.clone(),
+                            self.paths.clone(),
+                            LoaderKind::Quilt,
+                        );
+                    }
+                    if self.versions.loaders_loading {
+                        ui.spinner();
+                    }
+                });
+                if self.versions.loader != LoaderChoice::None {
+                    let pick = self.versions.loader_pick.clone();
+                    egui::ComboBox::from_id_source("loader_pick")
+                        .selected_text(pick.clone().unwrap_or_else(|| "—".into()))
+                        .show_ui(ui, |ui| {
+                            for lv in self.versions.loader_versions.clone() {
+                                ui.selectable_value(
+                                    &mut self.versions.loader_pick,
+                                    Some(lv.clone()),
+                                    lv,
+                                );
+                            }
+                        });
+                }
+                let loader_ready = self.versions.loader == LoaderChoice::None
+                    || self.versions.loader_pick.is_some();
+                let job_free = !self.busy && self.versions.installing.is_none();
+                let label = match (&self.versions.loader, &self.versions.loader_pick) {
+                    (LoaderChoice::None, _) => format!("⬇  Install {id}"),
+                    (kind, Some(lv)) => format!("⬇  Install {id} · {} {lv}", kind.label()),
+                    (kind, None) => format!("⬇  Install {id} · {} (pick a loader)", kind.label()),
+                };
+                ui.add_enabled_ui(job_free && loader_ready, |ui| {
+                    if ui
+                        .add(egui::Button::new(label).min_size(egui::vec2(280.0, 36.0)))
+                        .clicked()
+                    {
+                        let loader = match (
+                            self.versions.loader.clone(),
+                            self.versions.loader_pick.clone(),
+                        ) {
+                            (LoaderChoice::Fabric, Some(v)) => Some((LoaderKind::Fabric, v)),
+                            (LoaderChoice::Quilt, Some(v)) => Some((LoaderKind::Quilt, v)),
+                            _ => None,
+                        };
+                        versions::spawn_install(
+                            &self.runtime,
+                            self.ctx.clone(),
+                            self.events_tx.clone(),
+                            self.paths.clone(),
+                            id.clone(),
+                            loader,
+                        );
+                        self.versions.installing = Some(id.clone());
+                        self.busy = true;
+                        self.set_status(format!("Installing {id}…"));
+                    }
+                });
+                if self.versions.installing.is_some() {
+                    ui.add_space(8.0);
+                    match self.job_progress {
+                        Some(frac) => {
+                            ui.add(
+                                egui::ProgressBar::new(frac)
+                                    .text(self.status.clone())
+                                    .desired_width(320.0),
+                            );
+                        }
+                        None => {
+                            ui.horizontal(|ui| {
+                                ui.spinner();
+                                ui.label(self.status.clone());
+                            });
+                        }
+                    }
+                }
+            }
+            None => {
+                ui.weak("Select a version above.");
+            }
+        }
+
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.strong("Installed on this machine");
+            if ui.button("Rescan").clicked() {
+                self.versions.rescan_installed(&self.paths);
+            }
+        });
+        if self.versions.installed.is_empty() {
+            ui.weak("Nothing yet — pick a version above and click Install.");
+        }
+        egui::ScrollArea::vertical()
+            .id_source("installed_list")
+            .max_height(140.0)
+            .show(ui, |ui| {
+                for id in self.versions.installed.clone() {
+                    ui.monospace(id);
+                }
+            });
+    }
+
+    fn draw_accounts(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Microsoft Accounts");
+        ui.separator();
+
+        // Device-code login card while a flow is waiting on the browser.
+        if let Some(flow) = self.accounts.flow.clone() {
+            egui::Frame::group(ui.style()).show(ui, |ui| {
+                ui.strong("Sign in to Minecraft");
+                ui.label("Open the sign-in page and enter this one-time code:");
+                ui.horizontal(|ui| {
+                    ui.heading(flow.user_code.clone());
+                    if ui.button("Copy").clicked() {
+                        self.ctx.copy_text(flow.user_code.clone());
+                    }
+                });
+                ui.label(format!("at {}", flow.verification_uri));
+                ui.horizontal(|ui| {
+                    if ui.button("Open sign-in page").clicked() {
+                        let _ = std::process::Command::new(java::open_program())
+                            .arg(&flow.verification_uri)
+                            .spawn();
+                    }
+                    if self.accounts.login_open_failed {
+                        ui.weak("Browser did not open — use the address above.");
+                    }
+                });
+                if self.accounts.login_pending {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label("Waiting for you to finish in the browser…");
+                    });
+                }
+            });
+            ui.add_space(8.0);
+        }
+        if let Some(err) = self.accounts.login_error.clone() {
+            ui.colored_label(egui::Color32::from_rgb(240, 100, 100), err);
+        }
+
+        let active = self.accounts.active;
+        for account in self.accounts.accounts.clone() {
+            let is_active = active == Some(account.uuid);
+            ui.horizontal(|ui| {
+                ui.radio(is_active, "").on_hover_text("active account");
+                if is_active {
+                    if let Some(tex) = &self.accounts.avatar {
+                        ui.add(
+                            egui::Image::from_texture(tex)
+                                .fit_to_exact_size(egui::vec2(32.0, 32.0)),
+                        );
+                    } else {
+                        ui.label("👤");
+                    }
+                }
+                ui.label(&account.username);
+                if account.is_expired() {
+                    ui.weak("token expired");
+                } else if account.expires_soon(600) {
+                    ui.weak("token expiring");
+                }
+                if !is_active && ui.button("Set active").clicked() {
+                    self.accounts.set_active(account.uuid);
+                    self.accounts
+                        .request_avatar(&self.runtime, &self.ctx.clone());
+                }
+                if ui.button("Refresh").clicked() {
+                    accounts::spawn_refresh(
+                        &self.runtime,
+                        self.ctx.clone(),
+                        self.accounts.tx_login(),
+                        account.clone(),
+                    );
+                    self.set_status(format!("Refreshing {}'s tokens…", account.username));
+                }
+                if ui.button("Remove").clicked() {
+                    self.accounts.remove(account.uuid);
+                }
+            });
+        }
+
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(
+                    self.accounts.flow.is_none(),
+                    egui::Button::new("＋  Sign in with Microsoft"),
+                )
+                .clicked()
+            {
+                accounts::spawn_login(&self.runtime, self.ctx.clone(), self.accounts.tx_login());
+            }
+            if self.accounts.login_pending {
+                ui.spinner();
+            }
+        });
+        ui.weak("Tokens are stored in config/accounts.json.");
     }
 
     fn draw_worlds(&mut self, ui: &mut egui::Ui) {
@@ -229,13 +930,16 @@ impl App {
             .selected_text(current)
             .show_ui(ui, |ui| {
                 for (i, entry) in self.instances.iter().enumerate() {
-                    ui.selectable_value(&mut self.instance, Some(i), entry.display_name().to_string());
+                    ui.selectable_value(
+                        &mut self.instance,
+                        Some(i),
+                        entry.display_name().to_string(),
+                    );
                 }
             });
         if ui.button("Rescan instances").clicked() {
             self.instances = saves::list_instances(&self.paths.instances);
             self.instance = self.instances.first().map(|_| 0);
-            self.endpoint_for = None;
         }
 
         let Some(idx) = self.instance.filter(|i| self.instances.get(*i).is_some()) else {
@@ -244,47 +948,31 @@ impl App {
         };
         let entry = &self.instances[idx];
         let dir = entry.dir.clone();
-        let config = entry.config.backup_config.clone();
-        let cloud = entry.cloud_upload_possible();
+        let mut config = entry.config.backup_config.clone();
+
+        // One shared server: packs install already store `<Server URL>/api` as
+        // the endpoint, and saving the URL re-points every instance. Older
+        // instances fall back to the shared URL here so one URL drives both.
+        if config.endpoint_url.is_none() {
+            config.endpoint_url =
+                packs::backup_endpoint(self.client_settings.server_url.as_deref().unwrap_or(""));
+        }
+        let cloud = config.server_backups_enabled && config.endpoint_url.is_some();
 
         let policy = if !config.server_backups_enabled {
             "Cloud uploads: disabled by server policy".to_string()
         } else {
             match config.endpoint_url.as_deref() {
                 Some(endpoint) => format!("Cloud uploads: enabled → {endpoint}"),
-                None => "Cloud uploads: enabled, but no endpoint URL configured".to_string(),
+                None => "Cloud uploads: enabled — set the Server URL on the Home tab to pick a backup server".to_string(),
             }
         };
         ui.label(policy);
-
-        // Where the backup server lives — stored per instance in its instance.json.
-        if self.endpoint_for != Some(idx) {
-            self.endpoint_input = config.endpoint_url.clone().unwrap_or_default();
-            self.endpoint_for = Some(idx);
-        }
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            ui.label("Backup server URL:");
-            ui.add_sized(
-                [320.0, ui.spacing().interact_size.y.max(20.0)],
-                egui::TextEdit::singleline(&mut self.endpoint_input)
-                    .hint_text("https://backups.example.com/api"),
+        if config.endpoint_url.is_some() {
+            ui.weak(
+                "Backups use the Home tab's Server URL (…/api).\nChange it there and every instance follows.",
             );
-            if ui.button("Save server").clicked() {
-                match saves::set_endpoint(&dir, &self.endpoint_input) {
-                    Ok(url) => {
-                        if let Some(entry) = self.instances.get_mut(idx) {
-                            entry.config.backup_config.endpoint_url = url.clone();
-                        }
-                        match url {
-                            Some(u) => self.set_status(format!("Backup server set to {u}")),
-                            None => self.set_status("Backup server cleared"),
-                        }
-                    }
-                    Err(e) => self.set_status(format!("Could not save server URL: {e}")),
-                }
-            }
-        });
+        }
 
         ui.add_space(8.0);
         ui.horizontal(|ui| {
@@ -306,28 +994,31 @@ impl App {
         if worlds.is_empty() {
             ui.weak("No world saves found for this instance.");
         }
-        egui::ScrollArea::vertical().id_source("worlds_scroll").max_height(200.0).show(ui, |ui| {
-            for world in &worlds {
-                ui.horizontal(|ui| {
-                    let lock = if world.is_locked { "  🔒" } else { "" };
-                    ui.label(format!(
-                        "🌍 {}{lock}  ({})",
-                        world.display_name,
-                        saves::human_size(world.size_bytes)
-                    ));
-                    let label = if cloud { "Backup + Upload" } else { "Backup" };
-                    ui.add_enabled_ui(!self.busy && !world.is_locked, |ui| {
-                        if ui.button(label).clicked() {
-                            self.start_backup(
-                                dir.clone(),
-                                config.clone(),
-                                vec![world.folder_name.clone()],
-                            );
-                        }
+        egui::ScrollArea::vertical()
+            .id_source("worlds_scroll")
+            .max_height(200.0)
+            .show(ui, |ui| {
+                for world in &worlds {
+                    ui.horizontal(|ui| {
+                        let lock = if world.is_locked { "  🔒" } else { "" };
+                        ui.label(format!(
+                            "🌍 {}{lock}  ({})",
+                            world.display_name,
+                            saves::human_size(world.size_bytes)
+                        ));
+                        let label = if cloud { "Backup + Upload" } else { "Backup" };
+                        ui.add_enabled_ui(!self.busy && !world.is_locked, |ui| {
+                            if ui.button(label).clicked() {
+                                self.start_backup(
+                                    dir.clone(),
+                                    config.clone(),
+                                    vec![world.folder_name.clone()],
+                                );
+                            }
+                        });
                     });
-                });
-            }
-        });
+                }
+            });
 
         ui.add_space(8.0);
         ui.strong("Existing backups");
@@ -335,59 +1026,90 @@ impl App {
         if backups.is_empty() {
             ui.weak("No local backup archives yet.");
         }
-        egui::ScrollArea::vertical().id_source("backups_scroll").max_height(180.0).show(ui, |ui| {
-            for backup in &backups {
-                ui.horizontal(|ui| {
-                    ui.label(format!(
-                        "📦 {}  ({})",
-                        backup.file_name,
-                        saves::human_size(backup.size_bytes)
-                    ));
-                    ui.add_enabled_ui(!self.busy && cloud, |ui| {
-                        if ui.button("Upload").clicked() {
-                            self.start_upload(
-                                dir.clone(),
-                                config.clone(),
-                                vec![backup.file_name.clone()],
-                            );
+        egui::ScrollArea::vertical()
+            .id_source("backups_scroll")
+            .max_height(180.0)
+            .show(ui, |ui| {
+                for backup in &backups {
+                    ui.horizontal(|ui| {
+                        ui.label(format!(
+                            "📦 {}  ({})",
+                            backup.file_name,
+                            saves::human_size(backup.size_bytes)
+                        ));
+                        ui.add_enabled_ui(!self.busy && cloud, |ui| {
+                            if ui.button("Upload").clicked() {
+                                self.start_upload(
+                                    dir.clone(),
+                                    config.clone(),
+                                    vec![backup.file_name.clone()],
+                                );
+                            }
+                        });
+                        if ui
+                            .add_enabled(!self.busy, egui::Button::new("Restore"))
+                            .clicked()
+                        {
+                            match saves::restore(&dir, &backup.file_name) {
+                                Ok(path) => self.set_status(format!("Restored {}", path.display())),
+                                Err(e) => self.set_status(format!("Restore failed: {e}")),
+                            }
                         }
                     });
-                    if ui
-                        .add_enabled(!self.busy, egui::Button::new("Restore"))
-                        .clicked()
-                    {
-                        match saves::restore(&dir, &backup.file_name) {
-                            Ok(path) => self.set_status(format!("Restored {}", path.display())),
-                            Err(e) => self.set_status(format!("Restore failed: {e}")),
-                        }
-                    }
-                });
-            }
-        });
+                }
+            });
     }
 
     fn draw_java(&mut self, ui: &mut egui::Ui) {
         ui.heading("Java Settings");
         ui.separator();
-        egui::Grid::new("java_grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
-            ui.label("Java executable:");
-            ui.text_edit_singleline(&mut self.java.java_path);
-            ui.end_row();
 
-            ui.label("Min memory (MB):");
-            ui.add(egui::DragValue::new(&mut self.java.min_memory_mb).clamp_range(256..=16384));
-            ui.end_row();
+        // Detected-Java list: lazily scanned the first time the tab opens.
+        if !self.java_scanned {
+            self.java_versions = java::detect_all_with_managed(&self.paths.runtimes);
+            self.java_scanned = true;
+        }
+        if !self.java_versions.is_empty() {
+            ui.label("Detected Java runtimes:");
+            for install in &self.java_versions {
+                ui.selectable_value(
+                    &mut self.java.java_path,
+                    install.path.clone(),
+                    install.display(),
+                );
+            }
+            if ui.button("Rescan Java runtimes").clicked() {
+                self.java_versions = java::detect_all_with_managed(&self.paths.runtimes);
+            }
+            ui.label("Or type a custom executable path below.");
+            ui.separator();
+        }
 
-            ui.label("Max memory (MB):");
-            ui.add(egui::DragValue::new(&mut self.java.max_memory_mb).clamp_range(512..=32768));
-            ui.end_row();
+        egui::Grid::new("java_grid")
+            .num_columns(2)
+            .spacing([12.0, 8.0])
+            .show(ui, |ui| {
+                ui.label("Java executable:");
+                ui.text_edit_singleline(&mut self.java.java_path);
+                ui.end_row();
 
-            ui.label("Extra JVM args:");
-            ui.text_edit_singleline(&mut self.java.jvm_args);
-            ui.end_row();
-        });
+                ui.label("Min memory (MB):");
+                ui.add(egui::DragValue::new(&mut self.java.min_memory_mb).clamp_range(256..=16384));
+                ui.end_row();
+
+                ui.label("Max memory (MB):");
+                ui.add(egui::DragValue::new(&mut self.java.max_memory_mb).clamp_range(512..=32768));
+                ui.end_row();
+
+                ui.label("Extra JVM args:");
+                ui.text_edit_singleline(&mut self.java.jvm_args);
+                ui.end_row();
+            });
         ui.add_space(8.0);
-        ui.label(format!("Effective args: {}", self.java.to_jvm_args().join(" ")));
+        ui.label(format!(
+            "Effective args: {}",
+            self.java.to_jvm_args().join(" ")
+        ));
         ui.label(format!("Saved to: {}", self.settings_file().display()));
         ui.horizontal(|ui| {
             if ui.button("Save").clicked() {
@@ -430,13 +1152,9 @@ impl App {
 }
 
 fn open_in_file_manager(path: &std::path::Path) {
-    #[cfg(target_os = "windows")]
-    let opener = "explorer";
-    #[cfg(target_os = "macos")]
-    let opener = "open";
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-    let opener = "xdg-open";
-    let _ = std::process::Command::new(opener).arg(path).spawn();
+    let _ = std::process::Command::new(java::open_program())
+        .arg(path)
+        .spawn();
 }
 
 fn main() -> eframe::Result<()> {
