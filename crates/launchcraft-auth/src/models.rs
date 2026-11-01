@@ -35,6 +35,9 @@ pub struct LaunchcraftAccount {
     pub expires_at: DateTime<Utc>,
     /// Active skin URL if present
     pub skin_url: Option<String>,
+    /// Xbox user id from the XSTS claim (`${auth_xuid}` at launch)
+    #[serde(default)]
+    pub xuid: String,
 }
 
 impl LaunchcraftAccount {
