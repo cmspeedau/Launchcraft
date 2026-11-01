@@ -3,15 +3,19 @@
 
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
+use std::sync::Arc;
 
 use eframe::egui;
 use launchcraft_auth::{LaunchcraftAccount, MicrosoftAuthClient};
 use launchcraft_core::instance::InstanceConfig;
 use launchcraft_core::paths::LauncherPaths;
 use launchcraft_runtime::meta::{LaunchIdentity, LaunchSpec, LoaderKind, MinecraftClient};
-use launchcraft_runtime::{PlatformInfo, ProcessSpawner};
+use launchcraft_runtime::{
+    JavaDownloadProgress, JavaInstallPhase, JavaProgress, JavaRuntimeManager, PlatformInfo,
+    ProcessSpawner,
+};
 
-use crate::saves::{report, JobEvent};
+use crate::saves::{report, report_progress, JobEvent};
 
 /// Lifecycle notices for the Home tab's PLAY button.
 #[derive(Debug, Clone)]
@@ -89,6 +93,104 @@ pub fn pack_launch_id(game_version: &str, loader: Option<&str>) -> Result<String
     }
 }
 
+/// Choose the `java` executable for a launch. Priority: a previously
+/// provisioned managed runtime for the profile's major version; the user's
+/// configured Java when it is new enough; otherwise download the matching
+/// Temurin build into `runtimes/java-<major>` (Prism-style auto-provisioning).
+/// A failed download falls back to the configured Java with a warning.
+async fn pick_java(
+    req: &LaunchRequest,
+    required: Option<u32>,
+    job_tx: &Sender<JobEvent>,
+    ctx: &egui::Context,
+) -> PathBuf {
+    let user_java = req.java_binary.clone();
+    let Some(major) = required else {
+        return user_java;
+    };
+    let manager = JavaRuntimeManager::new(req.paths.runtimes.clone());
+    if let Some(managed) = manager.provisioned_java(major) {
+        return managed;
+    }
+    let probe = user_java.clone();
+    let user_major = tokio::task::spawn_blocking(move || crate::java::major_of(&probe))
+        .await
+        .unwrap_or(None);
+    if user_major.is_some_and(|m| m >= major) {
+        return user_java;
+    }
+    report_progress(
+        job_tx,
+        ctx,
+        format!(
+            "☕ This version needs Java {major} (configured is {}); downloading Temurin…",
+            user_major
+                .map(|m| m.to_string())
+                .unwrap_or_else(|| "undetectable".into())
+        ),
+        Some(0.0),
+        false,
+    );
+    let progress = java_progress_bridge(job_tx, ctx, major);
+    match manager.ensure_java(major, Some(&progress)).await {
+        Ok(path) => {
+            report_progress(
+                job_tx,
+                ctx,
+                format!("✅ Installed managed Java {major}"),
+                Some(1.0),
+                true,
+            );
+            path
+        }
+        Err(e) => {
+            report(
+                job_tx,
+                ctx,
+                format!(
+                    "⚠ Could not install Java {major}: {e} — launching with the configured Java"
+                ),
+                true,
+            );
+            user_java
+        }
+    }
+}
+
+/// Bridge byte-level Java install progress into throttled job events
+/// (≈0.5 % granularity, like the version installer).
+fn java_progress_bridge(tx: &Sender<JobEvent>, ctx: &egui::Context, major: u32) -> JavaProgress {
+    let (tx, ctx) = (tx.clone(), ctx.clone());
+    let last = Arc::new(std::sync::Mutex::new((String::new(), -1.0f32)));
+    Arc::new(move |p: JavaDownloadProgress| {
+        let total = p.total.unwrap_or(0);
+        let frac = if total > 0 {
+            (p.downloaded as f32 / total as f32).min(1.0)
+        } else {
+            0.0
+        };
+        let phase = match p.phase {
+            JavaInstallPhase::Checking => "checking",
+            JavaInstallPhase::Downloading => "downloading",
+            JavaInstallPhase::Extracting => "extracting",
+            JavaInstallPhase::Done => "done",
+        };
+        let mut last = last.lock().unwrap_or_else(|e| e.into_inner());
+        let fresh = last.0 != phase || frac >= last.1 + 0.005 || p.phase == JavaInstallPhase::Done;
+        if !fresh {
+            return;
+        }
+        *last = (phase.to_string(), frac);
+        report_progress(
+            &tx,
+            &ctx,
+            format!("☕ Java {major} {phase} ({:.0}%)", frac * 100.0),
+            Some(frac),
+            false,
+        );
+    })
+}
+
 /// Refresh the Minecraft token when it lapses soon, then plan + spawn.
 /// `log_tx` receives every game console line as raw `String`s.
 pub fn spawn_launch(
@@ -139,7 +241,7 @@ pub fn spawn_launch(
                     .unwrap_or_else(|_| launchcraft_auth::oauth::DEFAULT_CLIENT_ID.to_string()),
             },
         };
-        let plan = match client.plan_launch(&spec, &platform) {
+        let mut plan = match client.plan_launch(&spec, &platform) {
             Ok(plan) => plan,
             Err(e) => {
                 let msg = format!("Could not prepare launch: {e}");
@@ -149,6 +251,11 @@ pub fn spawn_launch(
                 return;
             }
         };
+
+        // Prism-style auto-provisioning: when the profile wants a newer Java
+        // than the configured one, download a matching Temurin runtime and
+        // swap it into the plan before spawning.
+        plan.config.java_binary = pick_java(&req, plan.java_major, &job_tx, &ctx).await;
 
         let mut process = match ProcessSpawner::spawn(plan.config, platform, move |line| {
             let _ = log_tx.send(line);

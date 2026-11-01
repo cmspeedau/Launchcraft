@@ -281,6 +281,12 @@ The egui client now plays the game it installs, PrismLauncher-style:
   modern rule-gated `arguments` *and* legacy `minecraftArguments` fully
   substituted. The game's own console output streams into the Logs tab.
 
+When the version profile requires a newer Java than the one configured on the
+Java tab, Launchcraft downloads the matching Temurin build from Adoptium
+(sha256-verified, extracted into `runtimes/java-<major>/`) and launches with
+it — provisioned runtimes also appear in the Java tab's dropdown. If the
+download fails the game still launches with your configured Java.
+
 Forge/NeoForge packs keep shipping their loader inside the synced instance
 (the server stores the official installer); launching those through the
 version manager is still on the roadmap.
@@ -291,6 +297,7 @@ version manager is still on the roadmap.
 | `LAUNCHCRAFT_FABRIC_URL` | `https://meta.fabricmc.net/v2` | Fabric loader meta base |
 | `LAUNCHCRAFT_QUILT_URL` | `https://meta.quiltmc.org/v3` | Quilt loader meta base |
 | `LAUNCHCRAFT_RESOURCES_URL` | `https://resources.download.minecraft.net` | Asset object host |
+| `LAUNCHCRAFT_ADOPTIUM_URL` | `https://api.adoptium.net/v3` | Temurin JDK assets API (auto Java provisioning) |
 | `LAUNCHCRAFT_MS_AUTH_URL` | `https://login.microsoftonline.com/consumers` | Microsoft authority base |
 | `LAUNCHCRAFT_CLIENT_ID` | built-in public client | Azure app id for the device flow |
 

@@ -1066,7 +1066,7 @@ impl App {
 
         // Detected-Java list: lazily scanned the first time the tab opens.
         if !self.java_scanned {
-            self.java_versions = java::detect_all();
+            self.java_versions = java::detect_all_with_managed(&self.paths.runtimes);
             self.java_scanned = true;
         }
         if !self.java_versions.is_empty() {
@@ -1079,7 +1079,7 @@ impl App {
                 );
             }
             if ui.button("Rescan Java runtimes").clicked() {
-                self.java_versions = java::detect_all();
+                self.java_versions = java::detect_all_with_managed(&self.paths.runtimes);
             }
             ui.label("Or type a custom executable path below.");
             ui.separator();

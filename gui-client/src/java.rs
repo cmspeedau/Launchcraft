@@ -56,12 +56,26 @@ pub fn detect_java() -> Option<String> {
 
 /// Query the detected Java version string, if available.
 pub fn version(java_path: &str) -> Option<String> {
-    let out = std::process::Command::new(java_path)
-        .arg("-version")
-        .output()
-        .ok()?;
+    let out = spawn_version(java_path)?;
     let text = String::from_utf8_lossy(&out.stderr);
     text.lines().next().map(String::from)
+}
+
+/// `java -version` is side-effect free, so a transient spawn failure
+/// (ETXTBSY/EAGAIN under heavy parallel load) is worth one retry.
+fn spawn_version(java_path: &str) -> Option<std::process::Output> {
+    for attempt in 0..2 {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(30));
+        }
+        if let Ok(out) = std::process::Command::new(java_path)
+            .arg("-version")
+            .output()
+        {
+            return Some(out);
+        }
+    }
+    None
 }
 
 /// Extract the quoted version from a `java -version` banner line.
@@ -77,6 +91,64 @@ pub fn parse_version(banner: &str) -> Option<String> {
 /// Version of a Java binary, parsed short form ("21.0.5"), `None` if not runnable.
 pub fn version_short(java_path: &str) -> Option<String> {
     version(java_path).and_then(|b| parse_version(&b))
+}
+
+/// Major version a Java executable reports (`21.0.5` → `21`, legacy `1.8.0_402`
+/// → `8`). `None` when the path is not runnable or the banner is unparsable.
+pub fn major_of(path: &Path) -> Option<u32> {
+    let banner = version(&path.to_string_lossy())?;
+    let v = parse_version(&banner)?;
+    let major = version_key(&v).0;
+    (major > 0).then_some(major)
+}
+
+/// Managed runtimes the launcher provisioned itself: `dir/java-<major>/bin/java`
+/// (macOS `Contents/Home` layout included). Only runnable ones are listed.
+pub fn managed_installs(dir: &Path) -> Vec<JavaInstall> {
+    let mut installs = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return installs;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.starts_with("java-") || !path.is_dir() {
+            continue;
+        }
+        let exe = if cfg!(windows) { "java.exe" } else { "java" };
+        let bin = ["bin", "Contents/Home/bin"]
+            .iter()
+            .map(|l| path.join(l).join(exe))
+            .find(|p| p.is_file());
+        let Some(bin) = bin else { continue };
+        let Some(version) = version_short(&bin.to_string_lossy()) else {
+            continue;
+        };
+        installs.push(JavaInstall {
+            path: bin.to_string_lossy().into_owned(),
+            version,
+            label: format!("{name} (managed)"),
+        });
+    }
+    installs.sort_by_key(|a| std::cmp::Reverse(version_key(&a.version)));
+    installs
+}
+
+/// System-detected runtimes merged with the launcher's managed ones,
+/// newest first; managed duplicates of the same binary are dropped.
+pub fn detect_all_with_managed(runtimes_dir: &Path) -> Vec<JavaInstall> {
+    let mut installs = detect_all();
+    for m in managed_installs(runtimes_dir) {
+        let mpath = Path::new(&m.path).canonicalize().ok();
+        if !installs
+            .iter()
+            .any(|i| Path::new(&i.path).canonicalize().ok() == mpath && mpath.is_some())
+        {
+            installs.push(m);
+        }
+    }
+    installs.sort_by_key(|a| std::cmp::Reverse(version_key(&a.version)));
+    installs
 }
 
 /// Scan the standard install locations and return every runnable Java we find,
@@ -263,6 +335,58 @@ mod tests {
         assert_eq!(installs[0].version, "99.1.0");
         assert_eq!(installs[0].label, "fake-java-99");
         assert_eq!(installs[0].path, good.join("bin/java").to_string_lossy());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn major_of_reads_stub_banners() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mk = |name: &str, banner: &str| {
+            let p = tmp.path().join(name);
+            let content = format!("#!/bin/sh\nprintf '%s\\n' '{banner}' >&2\n");
+            std::fs::write(&p, content).unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+            p
+        };
+        assert_eq!(
+            major_of(&mk("j21", "openjdk version \"21.0.5\" 2024-10-15")),
+            Some(21)
+        );
+        assert_eq!(major_of(&mk("j8", "java version \"1.8.0_402\"")), Some(8));
+        assert_eq!(major_of(&mk("junk", "not a banner")), None);
+        assert_eq!(major_of(&tmp.path().join("missing")), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_installs_lists_runnable_runtimes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rt21 = tmp.path().join("java-21");
+        std::fs::create_dir_all(rt21.join("bin")).unwrap();
+        std::fs::write(
+            rt21.join("bin/java"),
+            "#!/bin/sh\necho 'openjdk version \"21.0.5\" 2024-10-15' >&2\n",
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            rt21.join("bin/java"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        // Not a managed layout: skipped.
+        std::fs::create_dir_all(tmp.path().join("random-dir")).unwrap();
+        // Managed dir without a runnable bin: skipped.
+        std::fs::create_dir_all(tmp.path().join("java-17/bin")).unwrap();
+
+        let installs = managed_installs(tmp.path());
+        assert_eq!(installs.len(), 1);
+        assert_eq!(installs[0].version, "21.0.5");
+        assert_eq!(installs[0].label, "java-21 (managed)");
+
+        // Missing directory yields an empty list, not an error.
+        assert!(managed_installs(&tmp.path().join("nope")).is_empty());
     }
 
     #[test]

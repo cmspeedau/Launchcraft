@@ -17,6 +17,9 @@ pub enum RuntimeError {
     #[error("Java runtime not found: {0}")]
     JavaNotFound(String),
 
+    #[error("Java install error: {0}")]
+    JavaInstall(String),
+
     #[error("Unsupported platform: {0}")]
     UnsupportedPlatform(String),
 

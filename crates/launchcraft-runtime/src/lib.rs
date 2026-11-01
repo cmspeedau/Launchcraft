@@ -8,7 +8,10 @@ pub mod platform;
 pub mod process;
 
 pub use error::RuntimeError;
-pub use java::{AdoptiumClient, JavaMajorVersion, JavaRuntimeManager};
+pub use java::{
+    AdoptiumClient, JavaDownloadProgress, JavaInstallPhase, JavaMajorVersion, JavaProgress,
+    JavaRuntimeManager,
+};
 pub use meta::{
     InstallProgress, InstallReport, LaunchIdentity, LaunchPlan, LaunchSpec, LoaderKind,
     MinecraftClient, Progress, VersionListEntry, VersionListFile,

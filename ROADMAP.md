@@ -293,6 +293,14 @@ Phase 1: Workspace & Core Foundation (Done)
   - Versions tab: releases/snapshots filter, fabric/quilt loader picker, live
     install progress through the shared job channel; `sha1` tamper and 404
     install paths covered by axum-mocked end-to-end tests.
+- [x] **Automatic Java Provisioning (`launchcraft-runtime::java`):**
+  - Profile-required Java majors (`javaVersion.majorVersion`) resolved at PLAY:
+    managed runtime → configured Java if new enough → Adoptium assets lookup +
+    streamed sha256-verified Temurin download extracted into
+    `runtimes/java-<major>` (tar.gz and zip, zip-slip-safe, exec bits restored,
+    macOS `Contents/Home` layout supported); progress streams through the shared
+    job channel and failures degrade to the configured Java. Provisioned
+    runtimes show up in the Java tab; live test against api.adoptium.net.
 
 ---
 
