@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::RwLock;
 use uuid::Uuid;
 
@@ -41,7 +41,10 @@ impl AccountManager {
             fs::create_dir_all(parent)?;
         }
 
-        let guard = self.store.read().map_err(|e| AuthError::Storage(e.to_string()))?;
+        let guard = self
+            .store
+            .read()
+            .map_err(|e| AuthError::Storage(e.to_string()))?;
         let json = serde_json::to_string_pretty(&*guard)?;
         fs::write(&self.storage_path, json)?;
         Ok(())
@@ -51,7 +54,10 @@ impl AccountManager {
     pub fn save_account(&self, account: LaunchcraftAccount) -> Result<()> {
         let uuid = account.uuid;
         {
-            let mut guard = self.store.write().map_err(|e| AuthError::Storage(e.to_string()))?;
+            let mut guard = self
+                .store
+                .write()
+                .map_err(|e| AuthError::Storage(e.to_string()))?;
             if guard.active_account.is_none() {
                 guard.active_account = Some(uuid);
             }
@@ -62,7 +68,10 @@ impl AccountManager {
 
     /// Retrieve account by UUID
     pub fn get_account(&self, uuid: &Uuid) -> Result<LaunchcraftAccount> {
-        let guard = self.store.read().map_err(|e| AuthError::Storage(e.to_string()))?;
+        let guard = self
+            .store
+            .read()
+            .map_err(|e| AuthError::Storage(e.to_string()))?;
         guard
             .accounts
             .get(uuid)
@@ -72,13 +81,19 @@ impl AccountManager {
 
     /// List all stored accounts
     pub fn list_accounts(&self) -> Result<Vec<LaunchcraftAccount>> {
-        let guard = self.store.read().map_err(|e| AuthError::Storage(e.to_string()))?;
+        let guard = self
+            .store
+            .read()
+            .map_err(|e| AuthError::Storage(e.to_string()))?;
         Ok(guard.accounts.values().cloned().collect())
     }
 
     /// Get active account
     pub fn get_active_account(&self) -> Result<Option<LaunchcraftAccount>> {
-        let guard = self.store.read().map_err(|e| AuthError::Storage(e.to_string()))?;
+        let guard = self
+            .store
+            .read()
+            .map_err(|e| AuthError::Storage(e.to_string()))?;
         if let Some(uuid) = guard.active_account {
             Ok(guard.accounts.get(&uuid).cloned())
         } else {
@@ -89,7 +104,10 @@ impl AccountManager {
     /// Set active account
     pub fn set_active_account(&self, uuid: Uuid) -> Result<()> {
         {
-            let mut guard = self.store.write().map_err(|e| AuthError::Storage(e.to_string()))?;
+            let mut guard = self
+                .store
+                .write()
+                .map_err(|e| AuthError::Storage(e.to_string()))?;
             if !guard.accounts.contains_key(&uuid) {
                 return Err(AuthError::AccountNotFound(uuid.to_string()));
             }
@@ -101,7 +119,10 @@ impl AccountManager {
     /// Remove an account
     pub fn remove_account(&self, uuid: &Uuid) -> Result<()> {
         {
-            let mut guard = self.store.write().map_err(|e| AuthError::Storage(e.to_string()))?;
+            let mut guard = self
+                .store
+                .write()
+                .map_err(|e| AuthError::Storage(e.to_string()))?;
             guard.accounts.remove(uuid);
             if guard.active_account == Some(*uuid) {
                 guard.active_account = guard.accounts.keys().next().copied();

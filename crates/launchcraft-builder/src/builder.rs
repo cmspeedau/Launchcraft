@@ -66,7 +66,7 @@ impl PackBuilder {
             pack_id: self.config.pack_id.clone(),
             pack_version: self.config.version.clone(),
             game_version: self.config.game_version.clone(),
-            loader: None,
+            loader: self.config.loader.clone(),
             created_at: chrono::Utc::now(),
             files: manifest_entries,
             user_overrides: self.config.user_overrides.clone(),
@@ -100,6 +100,10 @@ impl PackBuilder {
                     .map_err(|e| BuilderError::Build(e.to_string()))?;
 
                 let rel_str = rel.to_string_lossy().replace('\\', "/");
+                // pack.json is the builder's own configuration, not a game file.
+                if rel_str == "pack.json" {
+                    continue;
+                }
                 let metadata = entry.metadata()?;
 
                 results.push(ScannedFile {
@@ -183,6 +187,7 @@ mod tests {
             title: "Test Pack".to_string(),
             version: "1.0.0".to_string(),
             game_version: "1.20.4".to_string(),
+            loader: Some("fabric-0.95.0".to_string()),
             summary: None,
             user_overrides: vec!["config/test.cfg".to_string()],
             compression_level: 3,

@@ -1,5 +1,5 @@
 use directories::ProjectDirs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// Handles resolution of directories across Linux, Windows, and macOS,
 /// with automatic detection of portable mode.
@@ -9,6 +9,12 @@ pub struct LauncherPaths {
     pub instances: PathBuf,
     pub cas_cache: PathBuf,
     pub runtimes: PathBuf,
+    /// Mojang-style `versions/<id>/` store for downloaded game versions.
+    pub versions: PathBuf,
+    /// Mojang-style `assets/` store (indexes + objects).
+    pub assets: PathBuf,
+    /// Shared Maven-layout `libraries/` store.
+    pub libraries: PathBuf,
     pub config: PathBuf,
     pub is_portable: bool,
 }
@@ -41,6 +47,9 @@ impl LauncherPaths {
             instances: root.join("instances"),
             cas_cache: root.join("cas"),
             runtimes: root.join("runtimes"),
+            versions: root.join("versions"),
+            assets: root.join("assets"),
+            libraries: root.join("libraries"),
             config: config_dir,
             root,
             is_portable,
@@ -53,6 +62,9 @@ impl LauncherPaths {
         std::fs::create_dir_all(&self.instances)?;
         std::fs::create_dir_all(&self.cas_cache)?;
         std::fs::create_dir_all(&self.runtimes)?;
+        std::fs::create_dir_all(&self.versions)?;
+        std::fs::create_dir_all(&self.assets)?;
+        std::fs::create_dir_all(&self.libraries)?;
         std::fs::create_dir_all(&self.config)?;
         Ok(())
     }

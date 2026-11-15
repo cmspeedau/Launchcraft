@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -13,10 +12,7 @@ pub enum AuthError {
     Io(#[from] std::io::Error),
 
     #[error("OAuth error: {error} - {description}")]
-    OAuth {
-        error: String,
-        description: String,
-    },
+    OAuth { error: String, description: String },
 
     #[error("Xbox Live authentication failed with code: {0}")]
     XboxLiveError(u64),

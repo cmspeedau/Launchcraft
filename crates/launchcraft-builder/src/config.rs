@@ -7,6 +7,9 @@ pub struct BuildConfig {
     pub title: String,
     pub version: String,
     pub game_version: String,
+    /// Mod loader recorded in the built manifest, `"fabric-0.15.0"` style.
+    #[serde(default)]
+    pub loader: Option<String>,
     #[serde(default)]
     pub summary: Option<String>,
     #[serde(default = "default_user_overrides")]
@@ -40,6 +43,7 @@ impl Default for BuildConfig {
             title: "Custom Modpack".to_string(),
             version: "1.0.0".to_string(),
             game_version: "1.20.4".to_string(),
+            loader: None,
             summary: Some("Compiled by Launchcraft Pack Builder".to_string()),
             user_overrides: default_user_overrides(),
             compression_level: default_zstd_level(),

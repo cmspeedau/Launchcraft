@@ -1,0 +1,29 @@
+[package]
+name = "launchcraft-server"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+launchcraft-core = { path = "../launchcraft-core" }
+launchcraft-builder = { path = "../launchcraft-builder" }
+axum = "0.7"
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+blake3 = { workspace = true }
+zstd = { workspace = true }
+reqwest = { workspace = true }
+zip = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+launchcraft-backup = { path = "../launchcraft-backup" }
+launchcraft-sync = { path = "../launchcraft-sync" }
+reqwest = { workspace = true }
+tempfile = { workspace = true }

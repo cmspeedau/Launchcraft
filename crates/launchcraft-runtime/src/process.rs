@@ -1,9 +1,9 @@
+use crate::error::RuntimeError;
+use crate::platform::{OperatingSystem, PlatformInfo};
 use std::path::PathBuf;
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
-use crate::error::RuntimeError;
-use crate::platform::{OperatingSystem, PlatformInfo};
 
 #[derive(Debug, Clone)]
 pub struct LaunchConfig {
@@ -23,6 +23,10 @@ pub struct LaunchConfig {
     pub auth_token: String,
     pub width: Option<u32>,
     pub height: Option<u32>,
+    /// Game arguments built from the version profile (modern rule-gated
+    /// `arguments` or substituted legacy `minecraftArguments`). When
+    /// present they replace the legacy hard-coded `--username …` block.
+    pub game_args: Vec<String>,
 }
 
 impl LaunchConfig {
@@ -50,7 +54,11 @@ impl LaunchConfig {
         }
 
         // Classpath construction
-        let sep = if platform.os == OperatingSystem::Windows { ";" } else { ":" };
+        let sep = if platform.os == OperatingSystem::Windows {
+            ";"
+        } else {
+            ":"
+        };
         let cp_joined = self
             .classpath
             .iter()
@@ -63,6 +71,22 @@ impl LaunchConfig {
 
         // Main game class
         args.push(self.main_class.clone());
+
+        // When the version profile supplied its own game arguments (every
+        // modern version, plus legacy ones run through the resolver), they
+        // are authoritative: pass them verbatim.
+        if !self.game_args.is_empty() {
+            args.extend(self.game_args.iter().cloned());
+            if let Some(w) = self.width {
+                args.push("--width".to_string());
+                args.push(w.to_string());
+            }
+            if let Some(h) = self.height {
+                args.push("--height".to_string());
+                args.push(h.to_string());
+            }
+            return args;
+        }
 
         // Minecraft game launch arguments
         args.push("--version".to_string());
@@ -80,7 +104,7 @@ impl LaunchConfig {
         args.push("--accessToken".to_string());
         args.push(self.auth_token.clone());
         args.push("--userType".to_string());
-        args.push("mojang".to_string());
+        args.push("msa".to_string());
 
         if let Some(w) = self.width {
             args.push("--width".to_string());
@@ -104,6 +128,12 @@ impl GameProcess {
         self.child.id()
     }
 
+    /// Signal an early shutdown (the game handles window-close itself; this
+    /// is the launcher's "Stop" path).
+    pub fn kill(&mut self) -> std::io::Result<()> {
+        self.child.start_kill()
+    }
+
     pub async fn wait(&mut self) -> Result<std::process::ExitStatus, RuntimeError> {
         self.child.wait().await.map_err(RuntimeError::Io)
     }
@@ -112,7 +142,11 @@ impl GameProcess {
 pub struct ProcessSpawner;
 
 impl ProcessSpawner {
-    pub fn spawn<F>(config: LaunchConfig, platform: PlatformInfo, mut log_callback: F) -> Result<GameProcess, RuntimeError>
+    pub fn spawn<F>(
+        config: LaunchConfig,
+        platform: PlatformInfo,
+        log_callback: F,
+    ) -> Result<GameProcess, RuntimeError>
     where
         F: FnMut(String) + Send + 'static,
     {
@@ -126,11 +160,28 @@ impl ProcessSpawner {
 
         let mut child = cmd.spawn().map_err(RuntimeError::Io)?;
 
+        // Minecraft logs almost everything to stderr: both pipes must be
+        // drained or the child blocks once a pipe buffer fills.
+        let sink = std::sync::Arc::new(std::sync::Mutex::new(log_callback));
         if let Some(stdout) = child.stdout.take() {
-            let mut reader = BufReader::new(stdout).lines();
+            let sink = sink.clone();
             tokio::spawn(async move {
+                let mut reader = BufReader::new(stdout).lines();
                 while let Ok(Some(line)) = reader.next_line().await {
-                    log_callback(line);
+                    if let Ok(mut f) = sink.lock() {
+                        f(line);
+                    }
+                }
+            });
+        }
+        if let Some(stderr) = child.stderr.take() {
+            let sink = sink.clone();
+            tokio::spawn(async move {
+                let mut reader = BufReader::new(stderr).lines();
+                while let Ok(Some(line)) = reader.next_line().await {
+                    if let Ok(mut f) = sink.lock() {
+                        f(line);
+                    }
                 }
             });
         }
