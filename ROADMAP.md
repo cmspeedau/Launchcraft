@@ -34,7 +34,7 @@ Portable Mode Trigger:
 
 Installed Mode (Standard OS defaults):
   - Linux:   ~/.config/launchcraft (config) & ~/.local/share/launchcraft (data)
-  - Windows: %APPDATA%\launchcraft
+  - Windows: %APPDATA%\\launchcraft
   - macOS:   ~/Library/Application Support/launchcraft
 ```
 
@@ -75,7 +75,9 @@ Phase 1: Workspace & Core Foundation (Done)
    │
    ├── Phase 6: Headless Pack Builder & Docker Image (Done)
    │
-   └── Phase 7: Save Game Backups & World Cloud Sync (Done)
+   ├── Phase 7: Save Game Backups & World Cloud Sync (Done)
+   │
+   └── Phase 8: Custom Pack Creation UI (Planned)
 ```
 
 ---
@@ -188,6 +190,19 @@ Phase 1: Workspace & Core Foundation (Done)
 - [x] **Desktop UI & IPC Integration:**
   - Worlds file viewer tab in `launchcraft-desktop`.
   - Action buttons for: "Backup World (ZIP)", "Upload to Server", "Download World ZIP", and "Restore Backup".
+
+---
+
+### Phase 8: Custom Pack Creation UI (Planned)
+*Objective: Bring the SKCraft-style Pack Manager workflow into Launchcraft’s existing desktop interface, so users can create custom pack projects in the UI instead of manually placing files into a folder.*
+
+- [ ] Add a **Create Pack** view alongside Modpacks, Worlds & Backups, Accounts, and Settings.
+- [ ] Provide pack metadata fields for pack ID, display name, pack version, Minecraft version, and optional summary, with validation compatible with `launchcraft-builder`'s `BuildConfig`.
+- [ ] Support selecting multiple files or a directory, plus drag-and-drop; show the staged file list, sizes, and per-file removal.
+- [ ] Export the staged content and generated `pack.json` as a downloadable project archive, preserving relative paths and preventing unsafe paths.
+- [ ] Connect the workflow to `launchcraft-builder` so the extracted project can be built into a manifest and CAS object distribution; show build progress and errors.
+- [ ] Keep the workflow local-first and explain permissions / file handling clearly; browser-only mode must not imply it can write arbitrary host folders.
+- [ ] Add UI tests for form validation, file path handling, archive export, and builder integration.
 
 ---
 
