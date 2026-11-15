@@ -43,16 +43,8 @@ async function exportPackProject(){
   if(!config.pack_id||!/^[a-zA-Z0-9_-]+$/.test(config.pack_id)){notice.textContent='Pack ID is required and may contain only letters, numbers, hyphens, and underscores.';notice.classList.add('error');return;}
   if(!config.title||!config.version||!config.game_version){notice.textContent='Please provide a display name, pack version, and Minecraft version.';notice.classList.add('error');return;}
   if(!state.packFiles.size){notice.textContent='Add at least one content file before saving the pack project.';notice.classList.add('error');return;}
-  try { const blob=await createZipProject(config);downloadBlob(blob,`${config.pack_id}-project.zip`);notice.textContent='Pack project ZIP downloaded. Extract it, then use the extracted folder with launchcraft-builder.'; }
+  if(!window.JSZip){notice.textContent='ZIP library is unavailable; install UI dependencies and build the frontend.';notice.classList.add('error');return;}
+  try {const zip=new JSZip();zip.file('pack.json',JSON.stringify(config,null,2));for(const [path,file] of state.packFiles)zip.file(path,file);const blob=await zip.generateAsync({type:'blob'});downloadBlob(blob,`${config.pack_id}-project.zip`);notice.textContent='Pack project ZIP downloaded. Extract it, then use the extracted folder with launchcraft-builder.';}
   catch(error){notice.textContent=`Could not create project archive: ${error.message||error}`;notice.classList.add('error');}
-}
-const CRC_TABLE=(()=>{const table=new Uint32Array(256);for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=(c&1)?(0xedb88320^(c>>>1)):(c>>>1);table[n]=c>>>0;}return table;})();
-function crc32(bytes){let crc=0xffffffff;for(const byte of bytes)crc=CRC_TABLE[(crc^byte)&0xff]^(crc>>>8);return (crc^0xffffffff)>>>0;}
-async function createZipProject(config){
-  const enc=new TextEncoder(),local=[],central=[];let offset=0;const entries=[['pack.json',new Blob([JSON.stringify(config,null,2)])],...state.packFiles.entries()];
-  for(const [path,file] of entries){const name=enc.encode(path.replace(/\\/g,'/').replace(/^\/+/,''));if(!name.length||new TextDecoder().decode(name).split('/').some(p=>p==='..'))throw new Error('Unsafe file path');const data=new Uint8Array(await file.arrayBuffer());const crc=crc32(data);const head=new Uint8Array(30+name.length);const hv=new DataView(head.buffer);hv.setUint32(0,0x04034b50,true);hv.setUint16(4,20,true);hv.setUint16(6,0x0800,true);hv.setUint16(8,0,true);hv.setUint32(14,crc,true);hv.setUint32(18,data.length,true);hv.setUint32(22,data.length,true);hv.setUint16(26,name.length,true);head.set(name,30);local.push(head,data);
-    const dir=new Uint8Array(46+name.length);const dv=new DataView(dir.buffer);dv.setUint32(0,0x02014b50,true);dv.setUint16(4,20,true);dv.setUint16(6,20,true);dv.setUint16(8,0x0800,true);dv.setUint16(10,0,true);dv.setUint32(16,crc,true);dv.setUint32(20,data.length,true);dv.setUint32(24,data.length,true);dv.setUint16(28,name.length,true);dv.setUint32(38,0,true);dv.setUint32(42,offset,true);dir.set(name,46);central.push(dir);offset+=head.length+data.length;
-  }
-  const centralSize=central.reduce((n,b)=>n+b.length,0);const end=new Uint8Array(22);const ev=new DataView(end.buffer);ev.setUint32(0,0x06054b50,true);ev.setUint16(8,central.length,true);ev.setUint16(10,central.length,true);ev.setUint32(12,centralSize,true);ev.setUint32(16,offset,true);return new Blob([...local,...central,end],{type:'application/zip'});
 }
 loadInstances();
