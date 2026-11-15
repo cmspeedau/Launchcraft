@@ -78,6 +78,12 @@ Phase 1: Workspace & Core Foundation (Done)
    └── Phase 7: Save Game Backups & World Cloud Sync (Done)
          │
          └── Phase 8: Server Console `launchcraft-server` (Done)
+               │
+               ├── Phase 9: Client Login, Version Store & Launch (Complete)
+               │
+               ├── Phase 10: Custom Pack Creation UI (Complete)
+               │
+               └── Phase 11: Server-Side Runtime Distribution (Planned)
 ```
 
 ---
@@ -301,6 +307,53 @@ Phase 1: Workspace & Core Foundation (Done)
     macOS `Contents/Home` layout supported); progress streams through the shared
     job channel and failures degrade to the configured Java. Provisioned
     runtimes show up in the Java tab; live test against api.adoptium.net.
+
+---
+
+### Phase 10: Custom Pack Creation UI (Complete)
+*Objective: Bring the SKCraft-style Pack Manager workflow into the browser-based server console, so operators can stage custom packs without host filesystem access.*
+
+- [x] **Browser-side staging (`crates/launchcraft-server/console/index.html`):**
+  - "Create Pack (browser)…" button in the Pack Manager action bar opening a modal.
+  - Metadata form (pack ID, title, version, game version, summary, optional loader) validated against `BuildConfig`.
+  - Multi-file and directory selection (`webkitdirectory`) plus drag-and-drop.
+  - Staged file list with relative paths, sizes, and per-file removal; total size summary.
+  - Unsafe path rejection (`..`, absolute, empty, NUL).
+- [x] **Project archive export:**
+  - Browser-side DEFLATE-compressed ZIP (`CompressionStream('deflate-raw')`, fallback to store) containing `pack.json` + staged files with relative paths.
+  - Download as `${pack_id}-project.zip`.
+- [x] **Connection to builder:**
+  - "Upload & Build" reuses `/console/modpacks/upload` — builds the ZIP in memory and posts it; server imports, fetches loader data, and builds the manifest + CAS distribution.
+  - Indeterminate progress + result reporting.
+- [x] **Permissions / file handling:**
+  - Static note explaining browser-only file handling; no host-folder writes; uploads land in the server data directory.
+- [x] **Verification:**
+  - JS syntax check, ZIP round-trip through Python `zipfile`, server smoke test (`console_html_includes_custom_pack_creator`), full server test suite green.
+
+---
+
+### Phase 11: Server-Side Runtime Distribution (Planned)
+*Objective: Move all Minecraft runtime provisioning (vanilla client.jar, assets, libraries, and Fabric/Quilt/Forge/NeoForge loaders) to the server, so the client only needs MS login and a file pull. Dedup runtimes shared across packs.*
+
+- [ ] **Server-side runtime fetch (`crates/launchcraft-server/src/runtime_dist.rs`):**
+  - Fetch from Mojang (version manifest, profile chain, client jar, asset index + objects, libraries + natives).
+  - Fabric/Quilt loader profiles from their meta APIs.
+  - Forge/NeoForge: download installer jar from Maven and execute it server-side (requires JDK in `Dockerfile.server`).
+  - Store all files in CAS with a manifest; stable runtime id `{mc}--{loader}--{loader_version}`.
+- [ ] **Dedup / cache:**
+  - Cache by runtime id; content-addressed blobs dedup across runtimes.
+  - Multiple packs with the same (mc, loader, version) reference one runtime.
+- [ ] **Endpoints:**
+  - `GET /runtimes`, `GET /runtimes/{id}/manifest.json`, `GET /runtimes/{id}/cas/objects/{shard}/{hash}` (same shape as `/packs`).
+- [ ] **Pack integration:**
+  - On modpack import, ensure the required runtime exists (build if missing); record `runtime_id` in the pack manifest/registry.
+- [ ] **Client side (`gui-client`):**
+  - New `runtimes.rs` registry (`runtimes.json`) to skip re-sync.
+  - On pack install, sync the runtime into the data root (`versions/`, `assets/`, `libraries/`) via `SyncEngine`.
+  - Launch works unchanged (profile already written by the runtime distribution).
+  - Keep Versions tab as manual fallback.
+- [ ] **Docker:**
+  - Add JDK (Temurin) to `Dockerfile.server`; `LAUNCHCRAFT_JAVA` override.
 
 ---
 

@@ -104,6 +104,10 @@ table.file-table { width: 100%; border-collapse: collapse; background: var(--bg-
 .cf-version { min-width: 250px; font-family: inherit; }
 .cf-status { min-height: 1.2em; font-size: .82rem; color: var(--text-muted); margin-top: .35rem; }
 .cf-status.err { color: #f87171; }
+.cp-file-row { display: flex; align-items: center; gap: .5rem; padding: .35rem .6rem; border-bottom: 1px solid var(--border); font-size: .8rem; }
+.cp-file-row:last-child { border-bottom: none; }
+.cp-file-path { flex: 1; font-family: ui-monospace, "SF Mono", Menlo, monospace; word-break: break-all; }
+.cp-file-size { color: var(--text-muted); white-space: nowrap; }
 </style>
 </head>
 <body>
@@ -171,6 +175,7 @@ table.file-table { width: 100%; border-collapse: collapse; background: var(--bg-
         <button class="btn" id="pack-add">Add Existing</button>
         <button class="btn" id="pack-curse" title="Browse CurseForge, Modrinth and FTB and import a modpack">Browse Modpacks…</button>
         <button class="btn" id="pack-upload" title="Import a modpack zip from this computer">Upload Modpack…</button>
+        <button class="btn" id="pack-create" title="Stage files in the browser and export a pack project ZIP">Create Pack (browser)…</button>
         <button class="btn" id="pack-refresh">Refresh</button>
       </div>
     </div>
@@ -255,6 +260,62 @@ table.file-table { width: 100%; border-collapse: collapse; background: var(--bg-
       <div class="cf-status" id="up-status"></div>
       <div class="cf-footer-right">
         <button class="btn btn-primary" id="up-go" disabled>⇪ Upload</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Custom pack creation (browser-side staging + export). -->
+<div class="cf-overlay" id="cp-overlay" style="display:none">
+  <div class="cf-modal up-modal">
+    <div class="cf-header">
+      <span class="cf-title">Create Pack (browser)</span>
+      <button class="btn cf-close" id="cp-close">✕ Close</button>
+    </div>
+    <p class="cf-note">Stage files in your browser, generate a <span class="mono">pack.json</span>,
+      and export a project ZIP for <span class="mono">launchcraft-builder</span>. Nothing is uploaded
+      until you choose "Upload &amp; Build".</p>
+    <div class="form-grid" style="margin-top:.4rem">
+      <div><label>Pack ID</label><input class="field-input" id="cp-id" placeholder="e.g. my-pack"></div>
+      <div><label>Title</label><input class="field-input" id="cp-title" placeholder="My Pack"></div>
+      <div><label>Version</label><input class="field-input" id="cp-version" value="1.0.0" placeholder="1.0.0"></div>
+      <div><label>Game version</label><input class="field-input" id="cp-game" placeholder="e.g. 1.21.4"></div>
+      <div><label>Loader (optional)</label>
+        <select class="field-input" id="cp-loader">
+          <option value="">none</option>
+          <option value="fabric">fabric</option>
+          <option value="quilt">quilt</option>
+          <option value="forge">forge</option>
+          <option value="neoforge">neoforge</option>
+        </select>
+      </div>
+      <div style="grid-column:1/-1"><label>Summary (optional)</label>
+        <textarea class="field-input" id="cp-summary" rows="2" style="font-family:inherit;resize:vertical" placeholder="Short description"></textarea>
+      </div>
+    </div>
+    <div class="cf-drop" id="cp-drop" style="margin-top:.75rem">
+      <input type="file" id="cp-files" multiple style="display:none">
+      <input type="file" id="cp-folder" webkitdirectory directory multiple style="display:none">
+      <button class="btn" id="cp-add-files" type="button">Add files</button>
+      <button class="btn" id="cp-add-folder" type="button">Add folder</button>
+      <span class="dim" style="font-size:.8rem">or drag &amp; drop here</span>
+    </div>
+    <div class="cp-file-list" id="cp-file-list" style="margin-top:.6rem;max-height:180px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;background:var(--bg-primary)">
+      <div class="empty" style="border:none;padding:1rem">No files staged yet.</div>
+    </div>
+    <div class="cf-status" id="cp-summary-line" style="margin-top:.35rem">0 files · 0 B</div>
+    <div class="cf-note" style="margin-top:.5rem">
+      Files are read in your browser only. Nothing is uploaded until you click "Upload &amp; Build".
+      Export creates a ZIP on your computer. The server cannot read your local folders; uploaded
+      packs land in the server's data directory and are built there.
+    </div>
+    <div class="cf-status" id="cp-notice"></div>
+    <div class="cf-footer">
+      <div class="cf-status" id="cp-status"></div>
+      <div class="cf-footer-right" style="gap:.5rem">
+        <button class="btn" id="cp-clear" type="button">Clear all</button>
+        <button class="btn" id="cp-export" type="button">Export project ZIP</button>
+        <button class="btn btn-primary" id="cp-upload" type="button" disabled>Upload &amp; Build</button>
       </div>
     </div>
   </div>
@@ -837,6 +898,292 @@ $("cf-more").addEventListener("click", () => cfSearch(false));
 $("cf-version").addEventListener("change", cfVersionChanged);
 $("cf-add").addEventListener("click", cfAdd);
 $("cf-detail").addEventListener("input", cfVersionChanged);
+
+// ---------- Custom pack creation (browser-side staging + export) ----------
+const cpFiles = new Map();
+function cpOpen() { $("cp-overlay").style.display = "flex"; cpRender(); }
+function cpClose() { $("cp-overlay").style.display = "none"; }
+$("pack-create").addEventListener("click", cpOpen);
+$("cp-close").addEventListener("click", cpClose);
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && $("cp-overlay").style.display !== "none") cpClose(); });
+
+const cpDrop = $("cp-drop");
+const cpFilesInput = $("cp-files");
+const cpFolderInput = $("cp-folder");
+$("cp-add-files").addEventListener("click", () => cpFilesInput.click());
+$("cp-add-folder").addEventListener("click", () => cpFolderInput.click());
+cpFilesInput.addEventListener("change", e => { cpAddFiles(e.target.files); e.target.value = ""; });
+cpFolderInput.addEventListener("change", e => { cpAddFiles(e.target.files); e.target.value = ""; });
+for (const t of ["dragenter","dragover"]) cpDrop.addEventListener(t, e => { e.preventDefault(); cpDrop.classList.add("dragging"); });
+for (const t of ["dragleave","drop"]) cpDrop.addEventListener(t, e => { e.preventDefault(); cpDrop.classList.remove("dragging"); });
+cpDrop.addEventListener("drop", e => cpAddFiles(e.dataTransfer.files));
+$("cp-clear").addEventListener("click", () => { cpFiles.clear(); cpRender(); });
+
+function cpSafePath(raw) {
+  const p = String(raw || "").replace(/\\/g, "/").replace(/^\/+/, "");
+  if (!p) return null;
+  const parts = p.split("/");
+  if (parts.some(x => x === "" || x === "." || x === "..")) return null;
+  if (parts.some(x => x.indexOf(String.fromCharCode(0)) !== -1)) return null;
+  return parts.join("/");
+}
+
+function cpAddFiles(fileList) {
+  for (const file of fileList) {
+    const path = cpSafePath(file.webkitRelativePath || file.name);
+    if (!path) continue;
+    cpFiles.set(path, file);
+  }
+  cpRender();
+}
+
+function cpHumanSize(n) {
+  if (!Number.isFinite(n)) return "\u2013";
+  const u = ["B","KB","MB","GB"]; let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return (i === 0 ? n : n.toFixed(1)) + " " + u[i];
+}
+
+function cpRender() {
+  const list = $("cp-file-list");
+  const entries = [...cpFiles.entries()].sort(([a],[b]) => a.localeCompare(b));
+  const total = entries.reduce((n, [,f]) => n + f.size, 0);
+  $("cp-summary-line").textContent = entries.length
+    ? entries.length + " file" + (entries.length === 1 ? "" : "s") + " \u00b7 " + cpHumanSize(total)
+    : "0 files \u00b7 0 B";
+  $("cp-upload").disabled = entries.length === 0;
+  if (!entries.length) { list.innerHTML = '<div class="empty" style="border:none;padding:1rem">No files staged yet.</div>'; return; }
+  list.replaceChildren();
+  for (const [path, file] of entries) {
+    const row = document.createElement("div");
+    row.className = "cp-file-row";
+    const name = document.createElement("span");
+    name.className = "cp-file-path";
+    name.textContent = path;
+    const size = document.createElement("span");
+    size.className = "cp-file-size";
+    size.textContent = cpHumanSize(file.size);
+    const btn = document.createElement("button");
+    btn.className = "btn"; btn.type = "button"; btn.textContent = "Remove";
+    btn.style.padding = ".2rem .45rem"; btn.style.fontSize = ".72rem";
+    btn.addEventListener("click", () => { cpFiles.delete(path); cpRender(); });
+    row.append(name, size, btn);
+    list.appendChild(row);
+  }
+}
+
+function cpConfig() {
+  const loader = $("cp-loader").value.trim();
+  const cfg = {
+    pack_id: $("cp-id").value.trim(),
+    title: $("cp-title").value.trim(),
+    version: $("cp-version").value.trim(),
+    game_version: $("cp-game").value.trim(),
+    summary: $("cp-summary").value.trim() || null,
+    user_overrides: ["options.txt","optionsof.txt","servers.dat","saves/","screenshots/","resourcepacks/","shaderpacks/","logs/","crash-reports/"],
+    compression_level: 3,
+  };
+  if (loader) cfg.loader = loader;
+  return cfg;
+}
+
+function cpNotice(msg, isErr) {
+  const el = $("cp-notice");
+  el.textContent = msg || "";
+  el.className = "cf-status" + (isErr ? " err" : "");
+}
+
+function cpValidate() {
+  const c = cpConfig();
+  if (!c.pack_id || !/^[a-zA-Z0-9_-]+$/.test(c.pack_id)) {
+    cpNotice("Pack ID is required and may contain only letters, numbers, hyphens, and underscores.", true);
+    return null;
+  }
+  if (!c.title) { cpNotice("Please provide a display name.", true); return null; }
+  if (!c.version) { cpNotice("Please provide a pack version.", true); return null; }
+  if (!c.game_version) { cpNotice("Please provide a Minecraft version.", true); return null; }
+  if (!cpFiles.size) { cpNotice("Add at least one content file before exporting.", true); return null; }
+  return c;
+}
+
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let i = 0; i < 256; i++) {
+    let c = i;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+    t[i] = c >>> 0;
+  }
+  return t;
+})();
+function crc32(bytes) {
+  let crc = 0xFFFFFFFF;
+  for (let i = 0; i < bytes.length; i++) crc = CRC_TABLE[(crc ^ bytes[i]) & 0xFF] ^ (crc >>> 8);
+  return (crc ^ 0xFFFFFFFF) >>> 0;
+}
+
+function strToBytes(s) { return new TextEncoder().encode(s); }
+
+async function makeZip(entries) {
+  const localParts = [];
+  const centralParts = [];
+  let offset = 0;
+  for (const e of entries) {
+    const nameBytes = strToBytes(e.path);
+    const data = e.data;
+    const crc = crc32(data);
+    // Compress with raw DEFLATE (browser-native CompressionStream). ZIP
+    // method 8 = DEFLATE. Fall back to store if the API is unavailable or
+    // compression does not shrink the payload.
+    let method = 0;
+    let payload = data;
+    if (typeof CompressionStream !== "undefined") {
+      try {
+        const cs = new CompressionStream("deflate-raw");
+        const writer = cs.writable.getWriter();
+        writer.write(data);
+        writer.close();
+        const chunks = [];
+        const reader = cs.readable.getReader();
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          chunks.push(value);
+        }
+        let total = 0;
+        for (const c of chunks) total += c.length;
+        const comp = new Uint8Array(total);
+        let pos = 0;
+        for (const c of chunks) { comp.set(c, pos); pos += c.length; }
+        if (comp.length < data.length) { method = 8; payload = comp; }
+      } catch (err) { method = 0; payload = data; }
+    }
+    const lh = new Uint8Array(30 + nameBytes.length);
+    const lv = new DataView(lh.buffer);
+    lv.setUint32(0, 0x04034b50, true);
+    lv.setUint16(4, 20, true);
+    lv.setUint16(6, 0, true);
+    lv.setUint16(8, method, true);
+    lv.setUint16(10, 0, true);
+    lv.setUint16(12, 0, true);
+    lv.setUint32(14, crc, true);
+    lv.setUint32(18, payload.length, true);
+    lv.setUint32(22, data.length, true);
+    lv.setUint16(26, nameBytes.length, true);
+    lv.setUint16(28, 0, true);
+    lh.set(nameBytes, 30);
+    localParts.push(lh, payload);
+
+    const cd = new Uint8Array(46 + nameBytes.length);
+    const cv = new DataView(cd.buffer);
+    cv.setUint32(0, 0x02014b50, true);
+    cv.setUint16(4, 20, true);
+    cv.setUint16(6, 20, true);
+    cv.setUint16(8, 0, true);
+    cv.setUint16(10, method, true);
+    cv.setUint16(12, 0, true);
+    cv.setUint16(14, 0, true);
+    cv.setUint32(16, crc, true);
+    cv.setUint32(20, payload.length, true);
+    cv.setUint32(24, data.length, true);
+    cv.setUint16(28, nameBytes.length, true);
+    cv.setUint16(30, 0, true);
+    cv.setUint16(32, 0, true);
+    cv.setUint16(34, 0, true);
+    cv.setUint16(36, 0, true);
+    cv.setUint32(38, 0, true);
+    cv.setUint32(42, offset, true);
+    cd.set(nameBytes, 46);
+    centralParts.push(cd);
+
+    offset += lh.length + payload.length;
+  }
+
+  const centralStart = offset;
+  let centralSize = 0;
+  for (const c of centralParts) centralSize += c.length;
+  const eocd = new Uint8Array(22);
+  const ev = new DataView(eocd.buffer);
+  ev.setUint32(0, 0x06054b50, true);
+  ev.setUint16(4, 0, true);
+  ev.setUint16(6, 0, true);
+  ev.setUint16(8, entries.length, true);
+  ev.setUint16(10, entries.length, true);
+  ev.setUint32(12, centralSize, true);
+  ev.setUint32(16, centralStart, true);
+  ev.setUint16(20, 0, true);
+
+  const blobParts = [...localParts, ...centralParts, eocd];
+  return new Blob(blobParts, { type: "application/zip" });
+}
+
+function downloadBlob(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function cpExport() {
+  const c = cpValidate();
+  if (!c) return;
+  cpNotice("");
+  try {
+    const entries = [];
+    entries.push({ path: "pack.json", data: strToBytes(JSON.stringify(c, null, 2)) });
+    for (const [path, file] of cpFiles) {
+      const buf = await file.arrayBuffer();
+      entries.push({ path, data: new Uint8Array(buf) });
+    }
+    const zip = await makeZip(entries);
+    downloadBlob(zip, c.pack_id + "-project.zip");
+    cpNotice("Project ZIP downloaded. Extract it, then use the folder with launchcraft-builder or upload it here.");
+  } catch (e) {
+    cpNotice("Could not create project archive: " + (e && e.message ? e.message : e), true);
+  }
+}
+$("cp-export").addEventListener("click", cpExport);
+
+async function cpUpload() {
+  const c = cpValidate();
+  if (!c) return;
+  const statusEl = $("cp-status");
+  statusEl.textContent = "Building project archive\u2026";
+  statusEl.className = "cf-status";
+  $("cp-upload").disabled = true;
+  try {
+    const entries = [];
+    entries.push({ path: "pack.json", data: strToBytes(JSON.stringify(c, null, 2)) });
+    for (const [path, file] of cpFiles) {
+      const buf = await file.arrayBuffer();
+      entries.push({ path, data: new Uint8Array(buf) });
+    }
+    const zip = await makeZip(entries);
+    statusEl.textContent = "Uploading & building\u2026";
+    const res = await fetch("/console/modpacks/upload?id=" + encodeURIComponent(c.pack_id) +
+      "&title=" + encodeURIComponent(c.title) +
+      "&version=" + encodeURIComponent(c.version) +
+      "&game_version=" + encodeURIComponent(c.game_version), {
+      method: "POST",
+      headers: { ...headers(), "Content-Type": "application/zip" },
+      body: zip,
+    });
+    if (!res.ok) {
+      let msg = res.status + " " + res.statusText;
+      try { msg += ": " + (await res.json()).message; } catch {}
+      throw new Error(msg);
+    }
+    const data = await res.json();
+    statusEl.textContent = "Built " + data.id + " v" + data.pack_version + " \u2014 " + data.file_count + " files";
+    loadCurrent();
+  } catch (e) {
+    statusEl.textContent = "Upload/build failed: " + (e && e.message ? e.message : e);
+    statusEl.className = "cf-status err";
+  } finally {
+    $("cp-upload").disabled = cpFiles.size === 0;
+  }
+}
+$("cp-upload").addEventListener("click", cpUpload);
+
 loadCurrent();
 </script>
 </body>

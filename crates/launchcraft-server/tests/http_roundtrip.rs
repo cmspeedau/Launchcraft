@@ -290,3 +290,18 @@ fn blake3_hex(instance_dir: &Path, name: &str) -> String {
     let bytes = std::fs::read(WorldInspector::get_backups_dir(instance_dir).join(name)).unwrap();
     blake3::hash(&bytes).to_hex().to_string()
 }
+
+#[tokio::test]
+async fn console_html_includes_custom_pack_creator() {
+    let server = spawn(default_cfg()).await;
+    let res = reqwest::Client::new()
+        .get(format!("{}/console", server.base))
+        .send()
+        .await
+        .unwrap();
+    assert!(res.status().is_success());
+    let body = res.text().await.unwrap();
+    assert!(body.contains("cp-overlay"), "missing custom-pack modal");
+    assert!(body.contains("pack-create"), "missing create-pack button");
+    assert!(body.contains("makeZip"), "missing ZIP writer");
+}
