@@ -28,8 +28,7 @@ async function backupWorld(worldFolderName){const instanceId=document.getElement
 async function uploadBackup(archiveName){const instanceId=document.getElementById('backup-instance-select').value;alert(`Uploading zipped backup ${archiveName} to remote server...`);await invokeCommand('upload_world_backup',{instanceId,archiveName});alert('Upload completed!');}
 async function restoreBackup(archiveName){const instanceId=document.getElementById('backup-instance-select').value;if(confirm(`Restore ${archiveName}? This will unpack the archive into saves.`)){await invokeCommand('restore_world_backup',{instanceId,archiveName});alert('Restored successfully!');loadInstanceWorlds();}}
 
-// Browser-based pack project creation, with no server/library dependency. Download a
-// self-extracting HTML project so selected file paths and bytes are preserved.
+// Browser-based custom pack project creation. Files stay in browser memory until export.
 const packDropZone=document.getElementById('pack-drop-zone'); const packFilesInput=document.getElementById('pack-files-input'); const packFolderInput=document.getElementById('pack-folder-input');
 document.getElementById('btn-add-files').addEventListener('click',()=>packFilesInput.click()); document.getElementById('btn-add-folder').addEventListener('click',()=>packFolderInput.click());
 packFilesInput.addEventListener('change',e=>{addPackFiles(e.target.files);e.target.value='';}); packFolderInput.addEventListener('change',e=>{addPackFiles(e.target.files);e.target.value='';});
@@ -44,15 +43,16 @@ async function exportPackProject(){
   if(!config.pack_id||!/^[a-zA-Z0-9_-]+$/.test(config.pack_id)){notice.textContent='Pack ID is required and may contain only letters, numbers, hyphens, and underscores.';notice.classList.add('error');return;}
   if(!config.title||!config.version||!config.game_version){notice.textContent='Please provide a display name, pack version, and Minecraft version.';notice.classList.add('error');return;}
   if(!state.packFiles.size){notice.textContent='Add at least one content file before saving the pack project.';notice.classList.add('error');return;}
-  // HTML Directory download is not broadly supported; export a project manifest plus
-  // individually selected files in a browser-produced tar archive instead.
-  try { const blob=await createTarProject(config);downloadBlob(blob,`${config.pack_id}-project.tar`);notice.textContent='Pack project downloaded as TAR. Extract it, then use the extracted folder with launchcraft-builder.'; }
+  try { const blob=await createZipProject(config);downloadBlob(blob,`${config.pack_id}-project.zip`);notice.textContent='Pack project ZIP downloaded. Extract it, then use the extracted folder with launchcraft-builder.'; }
   catch(error){notice.textContent=`Could not create project archive: ${error.message||error}`;notice.classList.add('error');}
 }
-async function createTarProject(config){
-  const records=[];const encoder=new TextEncoder();
-  const files=[['pack.json',new Blob([JSON.stringify(config,null,2)])],...state.packFiles.entries()];
-  for(const [path,file] of files){const safe=path.replace(/\\/g,'/').replace(/^\/+/, '');if(!safe||safe.split('/').some(p=>p==='..'))throw new Error('Unsafe file path');const bytes=new Uint8Array(await file.arrayBuffer());const header=new Uint8Array(512);const write=(offset,length,text)=>header.set(encoder.encode(text).subarray(0,length),offset);write(0,100,safe);write(100,8,'0000644\0');write(108,8,'0000000\0');write(116,8,'0000000\0');write(124,12,bytes.length.toString(8).padStart(11,'0')+'\0');write(136,12,Math.floor(Date.now()/1000).toString(8).padStart(11,'0')+'\0');header.fill(32,148,156);header[156]=48;write(257,6,'ustar\0');write(263,2,'00');const checksum=header.reduce((sum,b)=>sum+b,0);write(148,8,checksum.toString(8).padStart(6,'0')+'\0 ');records.push(header,bytes);const padding=(512-(bytes.length%512))%512;if(padding)records.push(new Uint8Array(padding));}
-  records.push(new Uint8Array(1024));return new Blob(records,{type:'application/x-tar'});
+const CRC_TABLE=(()=>{const table=new Uint32Array(256);for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=(c&1)?(0xedb88320^(c>>>1)):(c>>>1);table[n]=c>>>0;}return table;})();
+function crc32(bytes){let crc=0xffffffff;for(const byte of bytes)crc=CRC_TABLE[(crc^byte)&0xff]^(crc>>>8);return (crc^0xffffffff)>>>0;}
+async function createZipProject(config){
+  const enc=new TextEncoder(),local=[],central=[];let offset=0;const entries=[['pack.json',new Blob([JSON.stringify(config,null,2)])],...state.packFiles.entries()];
+  for(const [path,file] of entries){const name=enc.encode(path.replace(/\\/g,'/').replace(/^\/+/,''));if(!name.length||new TextDecoder().decode(name).split('/').some(p=>p==='..'))throw new Error('Unsafe file path');const data=new Uint8Array(await file.arrayBuffer());const crc=crc32(data);const head=new Uint8Array(30+name.length);const hv=new DataView(head.buffer);hv.setUint32(0,0x04034b50,true);hv.setUint16(4,20,true);hv.setUint16(6,0x0800,true);hv.setUint16(8,0,true);hv.setUint32(14,crc,true);hv.setUint32(18,data.length,true);hv.setUint32(22,data.length,true);hv.setUint16(26,name.length,true);head.set(name,30);local.push(head,data);
+    const dir=new Uint8Array(46+name.length);const dv=new DataView(dir.buffer);dv.setUint32(0,0x02014b50,true);dv.setUint16(4,20,true);dv.setUint16(6,20,true);dv.setUint16(8,0x0800,true);dv.setUint16(10,0,true);dv.setUint32(16,crc,true);dv.setUint32(20,data.length,true);dv.setUint32(24,data.length,true);dv.setUint16(28,name.length,true);dv.setUint32(38,0,true);dv.setUint32(42,offset,true);dir.set(name,46);central.push(dir);offset+=head.length+data.length;
+  }
+  const centralSize=central.reduce((n,b)=>n+b.length,0);const end=new Uint8Array(22);const ev=new DataView(end.buffer);ev.setUint32(0,0x06054b50,true);ev.setUint16(8,central.length,true);ev.setUint16(10,central.length,true);ev.setUint32(12,centralSize,true);ev.setUint32(16,offset,true);return new Blob([...local,...central,end],{type:'application/zip'});
 }
 loadInstances();
