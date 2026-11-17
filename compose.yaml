@@ -81,6 +81,12 @@ services:
       # Leave empty for an open API on a trusted LAN; set to require
       # Authorization: Bearer on every data endpoint.
       LAUNCHCRAFT_BACKUP_TOKEN: ${LAUNCHCRAFT_BACKUP_TOKEN:-}
+      # Java for old packs (1.7.10/1.12.2 -> 8, 1.17 -> 16, 1.20.5+ -> 21) is
+      # downloaded into /data/jres on first use and kept there. Set these to
+      # skip the download: an internal Adoptium mirror, or a mounted JDK path
+      # per major (LAUNCHCRAFT_JAVA_8=/opt/jres/java-8/bin/java).
+      # LAUNCHCRAFT_ADOPTIUM_URL: https://mirror.internal/adoptium/v3
+      # LAUNCHCRAFT_JAVA_8: /opt/jres/java-8/bin/java
     healthcheck:
       test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9090"]
       interval: 15s

@@ -518,6 +518,12 @@ async fn spawn_server(
         quilt_url: format!("{mock_base}/quilt"),
         forge_url: format!("{mock_base}/forge-maven"),
         neoforge_url: format!("{mock_base}/neoforge-maven"),
+        // These tests exercise pack import, not runtime staging: the mock has
+        // no Mojang routes, so any queued runtime build fails fast with a
+        // registry error instead of reaching the internet.
+        meta_url: format!("{mock_base}/meta"),
+        resources_url: format!("{mock_base}/resources"),
+        ..Default::default()
     };
     let state = AppState::new(&cfg).unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

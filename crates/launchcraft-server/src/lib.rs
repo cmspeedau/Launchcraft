@@ -10,10 +10,12 @@ pub mod api;
 pub mod console;
 pub mod curseforge;
 pub mod ftb;
+pub mod jres;
 pub mod loader;
 pub mod modpacks;
 pub mod modrinth;
 pub mod packs;
+pub mod runtime_dist;
 pub mod store;
 
 use std::path::PathBuf;
@@ -59,57 +61,104 @@ pub struct ServerConfig {
     pub forge_url: String,
     /// NeoForge Maven root for installer jars. (`LAUNCHCRAFT_NEOFORGE_URL`)
     pub neoforge_url: String,
+    /// Mojang metadata root used by server-side runtime builds; also honours
+    /// `LAUNCHCRAFT_META_URL` the way the runtime crate does. (`LAUNCHCRAFT_META_URL`)
+    pub meta_url: String,
+    /// Mojang asset-object CDN root. (`LAUNCHCRAFT_RESOURCES_URL`)
+    pub resources_url: String,
+    /// Fetch every asset object into runtime distributions, not just the
+    /// index. Off by default: a full vanilla asset store is hundreds of MB.
+    /// (`LAUNCHCRAFT_RUNTIME_ASSETS`)
+    pub runtime_assets: bool,
+    /// Where managed Java runtimes live (`java-8/`, `java-17/`, …).
+    /// Defaults to `<data_dir>/jres` so they persist on the data volume.
+    /// (`LAUNCHCRAFT_JRES`)
+    pub jres_dir: Option<PathBuf>,
+    /// Adoptium API root used to provision Java majors.
+    /// (`LAUNCHCRAFT_ADOPTIUM_URL`)
+    pub adoptium_url: String,
+    /// Reuse a JDK the host already has (`java` on PATH / `JAVA_HOME`) before
+    /// downloading one. Set `LAUNCHCRAFT_JRES_HOST_JAVA=0` to keep the pool
+    /// strictly managed (every major a known Temurin in `LAUNCHCRAFT_JRES`).
+    pub jres_host_java: bool,
+}
+
+impl Default for ServerConfig {
+    /// Production defaults — the values a bare `launchcraft-server` run uses
+    /// before any `LAUNCHCRAFT_*` variable is applied.
+    fn default() -> Self {
+        Self {
+            addr: "0.0.0.0:9090".into(),
+            data_dir: PathBuf::from("launchcraft-server-data"),
+            token: None,
+            repo_dist: None,
+            max_upload_mb: 256,
+            curseforge_key: None,
+            curseforge_url: "https://api.curseforge.com/v1".into(),
+            modrinth_url: "https://api.modrinth.com/v2".into(),
+            ftb_url: "https://dist.creeper.host/FTB2".into(),
+            fabric_url: "https://meta.fabricmc.net/v2".into(),
+            quilt_url: "https://meta.quiltmc.org/v3".into(),
+            forge_url: "https://maven.minecraftforge.net".into(),
+            neoforge_url: "https://maven.neoforged.net/releases".into(),
+            meta_url: "https://piston-meta.mojang.com".into(),
+            resources_url: "https://resources.download.minecraft.net".into(),
+            runtime_assets: false,
+            jres_dir: None,
+            adoptium_url: "https://api.adoptium.net/v3".into(),
+            jres_host_java: true,
+        }
+    }
 }
 
 impl ServerConfig {
+    /// Defaults overridden by the environment. Empty values are ignored, so
+    /// `LAUNCHCRAFT_CURSEFORGE_KEY=""` in a compose file keeps the provider
+    /// disabled rather than sending an empty API key upstream.
     pub fn from_env() -> Self {
+        let base = Self::default();
+        let var = |key: &str| std::env::var(key).ok().filter(|v| !v.is_empty());
+        let url = |key: &str, current: &str| var(key).unwrap_or_else(|| current.to_string());
         Self {
-            addr: std::env::var("LAUNCHCRAFT_ADDR").unwrap_or_else(|_| "0.0.0.0:9090".into()),
-            data_dir: std::env::var("LAUNCHCRAFT_DATA_DIR")
+            addr: url("LAUNCHCRAFT_ADDR", &base.addr),
+            data_dir: var("LAUNCHCRAFT_DATA_DIR")
                 .map(PathBuf::from)
-                .unwrap_or_else(|_| PathBuf::from("launchcraft-server-data")),
-            token: std::env::var("LAUNCHCRAFT_BACKUP_TOKEN")
-                .ok()
-                .filter(|t| !t.is_empty()),
-            repo_dist: std::env::var("LAUNCHCRAFT_REPO_DIST")
-                .ok()
-                .filter(|d| !d.is_empty())
-                .map(PathBuf::from),
-            max_upload_mb: std::env::var("LAUNCHCRAFT_MAX_UPLOAD_MB")
-                .ok()
+                .unwrap_or(base.data_dir),
+            token: var("LAUNCHCRAFT_BACKUP_TOKEN").or(base.token),
+            repo_dist: var("LAUNCHCRAFT_REPO_DIST")
+                .map(PathBuf::from)
+                .or(base.repo_dist),
+            max_upload_mb: var("LAUNCHCRAFT_MAX_UPLOAD_MB")
                 .and_then(|v| v.parse().ok())
-                .unwrap_or(256),
-            curseforge_key: std::env::var("LAUNCHCRAFT_CURSEFORGE_KEY")
-                .ok()
-                .filter(|k| !k.is_empty()),
-            curseforge_url: std::env::var("LAUNCHCRAFT_CURSEFORGE_URL")
-                .ok()
-                .filter(|u| !u.is_empty())
-                .unwrap_or_else(|| "https://api.curseforge.com/v1".into()),
-            modrinth_url: std::env::var("LAUNCHCRAFT_MODRINTH_URL")
-                .ok()
-                .filter(|u| !u.is_empty())
-                .unwrap_or_else(|| "https://api.modrinth.com/v2".into()),
-            ftb_url: std::env::var("LAUNCHCRAFT_FTB_URL")
-                .ok()
-                .filter(|u| !u.is_empty())
-                .unwrap_or_else(|| "https://dist.creeper.host/FTB2".into()),
-            fabric_url: std::env::var("LAUNCHCRAFT_FABRIC_URL")
-                .ok()
-                .filter(|u| !u.is_empty())
-                .unwrap_or_else(|| "https://meta.fabricmc.net/v2".into()),
-            quilt_url: std::env::var("LAUNCHCRAFT_QUILT_URL")
-                .ok()
-                .filter(|u| !u.is_empty())
-                .unwrap_or_else(|| "https://meta.quiltmc.org/v3".into()),
-            forge_url: std::env::var("LAUNCHCRAFT_FORGE_URL")
-                .ok()
-                .filter(|u| !u.is_empty())
-                .unwrap_or_else(|| "https://maven.minecraftforge.net".into()),
-            neoforge_url: std::env::var("LAUNCHCRAFT_NEOFORGE_URL")
-                .ok()
-                .filter(|u| !u.is_empty())
-                .unwrap_or_else(|| "https://maven.neoforged.net/releases".into()),
+                .unwrap_or(base.max_upload_mb),
+            curseforge_key: var("LAUNCHCRAFT_CURSEFORGE_KEY").or(base.curseforge_key),
+            curseforge_url: url("LAUNCHCRAFT_CURSEFORGE_URL", &base.curseforge_url),
+            modrinth_url: url("LAUNCHCRAFT_MODRINTH_URL", &base.modrinth_url),
+            ftb_url: url("LAUNCHCRAFT_FTB_URL", &base.ftb_url),
+            fabric_url: url("LAUNCHCRAFT_FABRIC_URL", &base.fabric_url),
+            quilt_url: url("LAUNCHCRAFT_QUILT_URL", &base.quilt_url),
+            forge_url: url("LAUNCHCRAFT_FORGE_URL", &base.forge_url),
+            neoforge_url: url("LAUNCHCRAFT_NEOFORGE_URL", &base.neoforge_url),
+            meta_url: url("LAUNCHCRAFT_META_URL", &base.meta_url),
+            resources_url: url("LAUNCHCRAFT_RESOURCES_URL", &base.resources_url),
+            runtime_assets: var("LAUNCHCRAFT_RUNTIME_ASSETS")
+                .map(|v| {
+                    matches!(
+                        v.to_ascii_lowercase().as_str(),
+                        "1" | "true" | "full" | "yes"
+                    )
+                })
+                .unwrap_or(base.runtime_assets),
+            jres_dir: var("LAUNCHCRAFT_JRES").map(PathBuf::from).or(base.jres_dir),
+            adoptium_url: url("LAUNCHCRAFT_ADOPTIUM_URL", &base.adoptium_url),
+            jres_host_java: var("LAUNCHCRAFT_JRES_HOST_JAVA")
+                .map(|v| {
+                    !matches!(
+                        v.to_ascii_lowercase().as_str(),
+                        "0" | "false" | "no" | "off"
+                    )
+                })
+                .unwrap_or(base.jres_host_java),
         }
     }
 }
@@ -138,6 +187,26 @@ pub struct AppState {
     pub forge_base: String,
     /// NeoForge Maven root (installer jar fetch).
     pub neoforge_base: String,
+    /// Mojang metadata root (server-side runtime builds).
+    pub meta_base: String,
+    /// Mojang asset-object CDN root (server-side runtime builds).
+    pub resources_base: String,
+    /// Default asset behaviour for runtime builds (`false` = index only).
+    pub runtime_assets: bool,
+    /// Runtime registry, manifests and the shared runtime CAS.
+    pub runtimes: runtime_dist::RuntimeStore,
+    /// Serialises runtime registry writes and destructive runtime operations;
+    /// builds themselves run detached in background tasks.
+    pub runtime_lock: tokio::sync::Mutex<()>,
+    /// Managed Java runtimes (`<data>/jres/java-<major>`), one per major so a
+    /// 1.7.10 pack and a 1.20.5 pack can coexist.
+    pub jres: jres::JreStore,
+    /// Adoptium API root for provisioning Java majors.
+    pub adoptium_url: String,
+    /// Serialises Java registry writes and downloads.
+    pub jre_lock: tokio::sync::Mutex<()>,
+    /// Whether host JDKs (PATH / `JAVA_HOME`) may satisfy a Java requirement.
+    pub jres_host_java: bool,
     /// Shared outbound HTTP client for the modpack providers.
     pub http: reqwest::Client,
 }
@@ -160,6 +229,27 @@ impl AppState {
             quilt_base: cfg.quilt_url.trim_end_matches('/').to_string(),
             forge_base: cfg.forge_url.trim_end_matches('/').to_string(),
             neoforge_base: cfg.neoforge_url.trim_end_matches('/').to_string(),
+            meta_base: cfg.meta_url.trim_end_matches('/').to_string(),
+            resources_base: cfg.resources_url.trim_end_matches('/').to_string(),
+            runtime_assets: cfg.runtime_assets,
+            runtimes: {
+                let runtimes = runtime_dist::RuntimeStore::new(&cfg.data_dir);
+                runtimes.ensure_layout()?;
+                runtimes
+            },
+            runtime_lock: tokio::sync::Mutex::new(()),
+            jres: {
+                let store = jres::JreStore::new(
+                    cfg.jres_dir
+                        .clone()
+                        .unwrap_or_else(|| cfg.data_dir.join("jres")),
+                );
+                store.ensure_layout()?;
+                store
+            },
+            adoptium_url: cfg.adoptium_url.trim_end_matches('/').to_string(),
+            jre_lock: tokio::sync::Mutex::new(()),
+            jres_host_java: cfg.jres_host_java,
             http: reqwest::Client::builder()
                 .user_agent("LaunchcraftServer/0.1 (self-hosted modpack server)")
                 .build()
@@ -197,6 +287,7 @@ impl AppState {
             dist: dist.clone(),
             created_at: chrono::Utc::now().to_rfc3339(),
             source: None,
+            runtime_id: None,
         });
         registry.save(&self.data_dir)?;
         tracing::info!(
@@ -325,6 +416,15 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             .route("/packs", get(api::client_pack_list))
             .route("/packs/:id/manifest.json", get(api::pack_manifest_file))
             .route("/packs/:id/cas/objects/:shard/:hash", get(api::pack_blob))
+            .route("/runtimes", get(runtime_dist::client_runtime_list))
+            .route(
+                "/runtimes/:id/manifest.json",
+                get(runtime_dist::runtime_manifest),
+            )
+            .route(
+                "/runtimes/:id/cas/objects/:shard/:hash",
+                get(runtime_dist::runtime_blob),
+            )
     };
     let console_routes: axum::Router<()> = Router::new()
         .route("/", get(console::index))
@@ -354,6 +454,20 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             post(modpacks::upload).route_layer(DefaultBodyLimit::max(max_upload_bytes)),
         )
         .route("/console/modpacks/update/:id", post(modpacks::update))
+        .route(
+            "/console/runtimes",
+            get(runtime_dist::console_list).post(runtime_dist::console_build),
+        )
+        .route(
+            "/console/runtimes/:id",
+            delete(runtime_dist::console_delete),
+        )
+        .route("/console/runtimes/gc", post(runtime_dist::console_gc))
+        .route(
+            "/console/jres",
+            get(jres::console_list).post(jres::console_provision),
+        )
+        .route("/console/jres/:major", delete(jres::console_delete))
         .with_state(state.clone());
     let api: axum::Router<()> = api_routes().with_state(state);
     Router::new()

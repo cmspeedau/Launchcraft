@@ -109,6 +109,7 @@ pub async fn client_pack_list(
             "game_version": status["game_version"],
             "pack_version": status["pack_version"],
             "loader": status["loader"],
+            "runtime_id": p.runtime_id,
             "file_count": status["file_count"],
             "total_bytes": status["total_bytes"],
         }));

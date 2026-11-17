@@ -25,14 +25,29 @@ RUN cargo build --release -p launchcraft-server --verbose
 # ------------------------------------------------------------------------------
 FROM debian:bookworm-slim
 
+# A Minecraft server host does not serve one Java era: 1.7.10/1.12.2 packs need
+# Java 8, 1.17 needs 16, 1.18-1.20.4 need 17, 1.20.5+ need 21. Baking all of
+# them would double the image, so only the majority case (17) ships here and
+# every other major is provisioned on demand by the server into the data
+# volume (`/data/jres/java-<major>`, sha256-verified Temurin builds), where it
+# survives restarts and is shared by every pack that needs it.
+#
+# Air-gapped hosts: mount JDKs into the container and point
+#   LAUNCHCRAFT_JAVA_8=/opt/jres/java-8/bin/java
+#   LAUNCHCRAFT_JAVA_21=/opt/jres/java-21/bin/java
+#   LAUNCHCRAFT_JAVA=<a single fallback java, any major it reports matches>
+# at them (they win over downloads). LAUNCHCRAFT_ADOPTIUM_URL redirects
+# provisioning at an internal mirror.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     libzstd1 \
+    openjdk-17-jre-headless \
  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /usr/src/launchcraft/target/release/launchcraft-server /usr/local/bin/launchcraft-server
 
-# Uploaded backups and policy.json live here; mount a volume to persist them.
+# Uploaded backups, pack workspaces, runtime CAS, Java pools and policy.json
+# all live under /data; mount a volume to persist them.
 ENV LAUNCHCRAFT_DATA_DIR=/data
 ENV LAUNCHCRAFT_ADDR=0.0.0.0:9090
 

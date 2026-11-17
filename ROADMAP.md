@@ -13,6 +13,7 @@ Launchcraft modernizes the SKCraft philosophy into a fast, memory-safe, portable
 - **Desktop UI Framework:** Tauri v2 + lightweight web frontend (TypeScript/Tailwind/Solid or Svelte)
 - **Modpack Distribution:** HTTP/S3/CDN Content-Addressable Storage (CAS)
 - **Pack Builder:** Headless Rust CLI (`launchcraft-builder`) packaged for standalone usage and Docker CI
+- **Server Console:** axum JSON API + React/TypeScript/Vite SPA embedded in the `launchcraft-server` binary
 - **World & Save Game Management:** `launchcraft-backup` with server-side enablement control, ZIP streaming, and world management
 
 ### Target Platforms
@@ -83,7 +84,21 @@ Phase 1: Workspace & Core Foundation (Done)
                │
                ├── Phase 10: Custom Pack Creation UI (Complete)
                │
-               └── Phase 11: Server-Side Runtime Distribution (Planned)
+               ├── Phase 11: Server-Side Runtime Distribution (In Progress)
+               │
+               └── Version 2: Pack Studio & Game Saves (Planned — server side only)
+                     │
+                     ├── Phase 12: Pack Studio Console Foundation
+                     │
+                     ├── Phase 13: Per-Pack Mod Management
+                     │
+                     ├── Phase 14: Versions, Loaders & Validation
+                     │
+                     ├── Phase 15: Library & Distribution UI
+                     │
+                     ├── Phase 16: Game Saves
+                     │
+                     └── Phase 17: Lifecycle & Destructive Actions
 ```
 
 ---
@@ -332,32 +347,158 @@ Phase 1: Workspace & Core Foundation (Done)
 
 ---
 
-### Phase 11: Server-Side Runtime Distribution (Planned)
+### Phase 11: Server-Side Runtime Distribution (In Progress)
 *Objective: Move all Minecraft runtime provisioning (vanilla client.jar, assets, libraries, and Fabric/Quilt/Forge/NeoForge loaders) to the server, so the client only needs MS login and a file pull. Dedup runtimes shared across packs.*
 
-- [ ] **Server-side runtime fetch (`crates/launchcraft-server/src/runtime_dist.rs`):**
-  - Fetch from Mojang (version manifest, profile chain, client jar, asset index + objects, libraries + natives).
-  - Fabric/Quilt loader profiles from their meta APIs.
-  - Forge/NeoForge: download installer jar from Maven and execute it server-side (requires JDK in `Dockerfile.server`).
-  - Store all files in CAS with a manifest; stable runtime id `{mc}--{loader}--{loader_version}`.
-- [ ] **Dedup / cache:**
-  - Cache by runtime id; content-addressed blobs dedup across runtimes.
-  - Multiple packs with the same (mc, loader, version) reference one runtime.
-- [ ] **Endpoints:**
-  - `GET /runtimes`, `GET /runtimes/{id}/manifest.json`, `GET /runtimes/{id}/cas/objects/{shard}/{hash}` (same shape as `/packs`).
-- [ ] **Pack integration:**
-  - On modpack import, ensure the required runtime exists (build if missing); record `runtime_id` in the pack manifest/registry.
+- [x] **Server-side runtime fetch (`crates/launchcraft-server/src/runtime_dist.rs`):**
+  - Vanilla, Fabric and Quilt: version manifest, `inheritsFrom` profile chain, client jar,
+    asset index and the libraries/natives that apply to this platform are fetched into a
+    throwaway `LauncherPaths` staging tree with `launchcraft-runtime::meta::MinecraftClient`,
+    then packed into the runtime store; the staging tree is removed on success and failure.
+  - Asset **objects** are opt-in (`LAUNCHCRAFT_RUNTIME_ASSETS`, or `assets` per request): the
+    index json is always stored, the hundreds of MB of objects only on request — a first
+    build costs a few jars instead of mirroring Mojang's whole asset store.
+  - Forge/NeoForge are refused with an explicit message instead of half-built: their
+    launch profile has to be unpacked out of the installer jar (Java itself is no longer
+    the blocker — `jres` pools one JDK per major on demand). Those packs keep shipping the
+    installer through `src/loader/`.
+  - Store: `<data>/runtimes/registry.json` (status `building`/`ready`/`error`, sizes,
+    timestamps) plus `<data>/runtimes/<id>/manifest.json` in exactly the `PackManifest`
+    shape, so a client can sync a runtime with the ordinary `SyncEngine`. Stable ids:
+    `{mc}--vanilla` and `{mc}--{loader}--{loader_version}`.
+  - Builds run detached — `POST /console/runtimes` answers `202`, and a request for a build
+    already running joins it rather than starting a second fetch.
+- [x] **Dedup / cache:**
+  - One shared runtime CAS (`<data>/runtimes/cas/objects/…`): blobs dedup across every
+    runtime, so a Fabric and a Quilt runtime on the same version reuse the same client jar
+    and library objects and a runtime record is metadata plus a manifest, not a copy.
+  - Reference counting against the pack registry, with `POST /console/runtimes/gc` dropping
+    runtimes no pack references plus the blobs only they used. GC skips entirely while a
+    build is in flight, so it can never delete a blob about to be referenced.
+    `DELETE /console/runtimes/<id>` unregisters one runtime and refuses while a pack still
+    references it (`force=1` overrides). Pack deletion (Version 2 Phase 17) never touches
+    runtime blobs.
+- [x] **Endpoints:**
+  - `GET /runtimes`, `GET /runtimes/{id}/manifest.json`,
+    `GET /runtimes/{id}/cas/objects/{shard}/{hash}` — client-facing like `/packs` (no auth),
+    with the same lowercase-hex + shard-prefix fencing; admin list/queue/delete/gc under
+    `/console/runtimes` keep the bearer token.
+- [x] **Pack integration:**
+  - Modpack import (`add`, `upload`, `update`) derives the runtime from the pack's game
+    version + loader, queues the build and records `runtime_id` in the pack registry; the id
+    rides along in `GET /packs`, so a launcher resolves pack and runtime in one round trip.
+    A runtime problem is a warning, never a lost import.
+  - Recorded in the registry rather than in `manifest.json` on purpose: that manifest is the
+    on-disk contract with already-deployed clients, and extending it would mean changing the
+    builder too — outside this release's server-only scope.
+- [x] **Multi-major Java pool (`crates/launchcraft-server/src/jres.rs`):**
+  - One server, many Java eras: `1.7.10`/`1.10.2`/`1.12.2` → 8, `1.17` → 16,
+    `1.18`–`1.20.4` → 17, `1.20.5`+ → 21, snapshots by year, and a profile's own
+    `javaVersion.majorVersion` always wins. Java is keyed by major and pooled in
+    `<data>/jres/java-<major>` (`LAUNCHCRAFT_JRES`), so eras coexist instead of
+    fighting over one `JAVA_HOME`.
+  - Resolution order: `LAUNCHCRAFT_JAVA_<major>` → already-provisioned managed JDK →
+    host JDK (`java` on PATH, then `JAVA_HOME`; `LAUNCHCRAFT_JRES_HOST_JAVA=0` ignores
+    them) → sha256-verified Temurin download through the existing
+    `launchcraft-runtime::java` provisioning. Host paths are canonicalised before
+    measuring, so `/usr/bin/java` reports its real JDK home (~130 MB) instead of
+    `/usr` (~17 GB), and a record whose binary vanished is pruned on read.
+  - Runtime records carry `required_java`; `GET /console/jres` reports per major
+    (available, source `env`/`system`/`managed`, version string, size, `required_by`),
+    `POST /console/jres` pre-provisions, `DELETE /console/jres/<major>` is refused while
+    a runtime needs it (`force=1` overrides) and only forgets host JDKs rather than
+    deleting them. Records whose binary vanished are pruned on read.
+  - Java 7/6 (Minecraft ≤ 1.5.x) are listed as non-downloadable with a message pointing
+    at `LAUNCHCRAFT_JAVA_7`, because Adoptium does not publish them.
+  - Tests: five integration tests against a mock Adoptium API serving a real tar.gz
+    "JDK" whose `bin/java` is a version-printing script — covering two eras side by side,
+    reuse without re-download, persistence across restarts, refusal/force delete, the
+    Java 7 override path, unknown majors and token gating; plus unit tests for the
+    version table and the resolution preference order.
 - [ ] **Client side (`gui-client`):**
   - New `runtimes.rs` registry (`runtimes.json`) to skip re-sync.
   - On pack install, sync the runtime into the data root (`versions/`, `assets/`, `libraries/`) via `SyncEngine`.
   - Launch works unchanged (profile already written by the runtime distribution).
   - Keep Versions tab as manual fallback.
-- [ ] **Docker:**
-  - Add JDK (Temurin) to `Dockerfile.server`; `LAUNCHCRAFT_JAVA` override.
+- [~] **Docker:**
+  - `docker/Dockerfile.server` ships `openjdk-17-jre-headless` as the common-case
+    bootstrap; every other major is provisioned onto the `/data` volume on first use, so
+    a container restart never re-downloads a JDK. `LAUNCHCRAFT_ADOPTIUM_URL` points
+    provisioning at a mirror and `LAUNCHCRAFT_JAVA` / `LAUNCHCRAFT_JAVA_<major>` at a
+    mounted JDK for air-gapped hosts (both documented in `compose.yaml`).
+  - Still open: a JDK that can *run* the legacy Forge installer (Java 8 with the
+    `unpack200` those installers shell out to) as a build-time dependency rather than a
+    runtime download — the remaining prerequisite for Forge/NeoForge runtime builds.
 
 ---
 
-## 4. Architectural Safeguards
+## 4. Version 2 Update — Pack Studio & Game Saves (Planned)
+
+*Target release: **v2.0.0** (workspace crates currently at `0.1.0`).*
+
+*Scope guard: everything below is **server side only** — `crates/launchcraft-server` (console UI + JSON API). The launcher (`gui-client`), the desktop app, `launchcraft-builder`, `launchcraft-sync`, the CAS/manifest format and the public `/packs` distribution contract stay unchanged. No Node toolchain enters `cargo build` or the Docker images.*
+
+### Phase 12: Pack Studio Console Foundation (Planned)
+*Objective: Replace the single embedded HTML page with a React + TypeScript + Vite console organised around packs instead of tables and modals.*
+
+- [ ] **Embedded SPA build (`crates/launchcraft-server/ui/` → `console/`):**
+  - Vite + React + TypeScript sources under `ui/`; build output committed to `console/` and embedded with `include_dir!`, so `cargo build`, `cargo test` and `docker/Dockerfile.server` still need no Node.
+  - `/console` serves the SPA with history fallback and `/` redirects to it; hashed assets under `/console/assets/*` stay public while every `/console/*` data route keeps the bearer-token check.
+  - CI `ui` job runs `npm ci && npm run build` then `git diff --exit-code -- crates/launchcraft-server/console`, so the committed build can never drift.
+  - Dev loop: `npm run dev` with Vite proxying `/console` to the running Rust server.
+- [ ] **Pack-centric shell:** left rail of pack cards (icon, title, game-version + loader badges, build status, search/filter) and a tabbed pane — Overview · Mods · Files · Builds · Distribute — with Dashboard, Backups and Policy kept as existing views.
+- [ ] **Pack detail API:** `GET /console/packs/:id` (registry row + `pack.json` + dist status) and `GET/PUT /console/packs/:id/config`.
+- [ ] **Workspace files API:** list / read / write / delete / upload under `packs/<id>/src`, guarded by the same containment rules as the CAS shard check, with a 2 MB text cap, binary detection for jars and zips, and no symlink following.
+- [ ] **Studio metadata:** `packs/<id>/studio.json` next to `src/` and `dist/` holds build history and mod provenance — kept outside the workspace on purpose, because the builder only skips `pack.json` and would otherwise pack metadata into every manifest.
+- [ ] **Verification:** asset fallback and redirect tests, traversal and upload-cap rejection, build-history round trip, existing server suite green.
+
+### Phase 13: Per-Pack Mod Management (Planned)
+*Objective: Prism-style mod handling inside a pack workspace — search, install with dependency resolution, enable/disable, update, remove — with provider keys never leaving the server.*
+
+- [ ] **Mod providers:** Modrinth (keyless) and CurseForge (gated by `LAUNCHCRAFT_CURSEFORGE_KEY`) behind one interface, in new modules rather than widening the pack-import pipeline; search facets derive from the open pack's game version and loader kind.
+- [ ] **Installed mods:** `GET /console/packs/:id/mods` joins `src/mods/*.jar[.disabled]` with `studio.json` provenance (provider, project, version, client/server side, installed at).
+- [ ] **Install with dependency resolution:** `POST /console/packs/:id/mods` walks provider dependency metadata recursively — cycle guard, already-present skip, optional and incompatible versions reported — downloads into `src/mods/`, records provenance, and returns the resolved set.
+- [ ] **Lifecycle:** enable/disable by renaming to `.jar.disabled`, update to the newest provider version compatible with the pack, remove; duplicate-project and client-only markers in the response.
+- [ ] **Verification:** hermetic provider mocks, dependency-graph unit tests, install / toggle / update / remove round trips on a temporary workspace.
+
+### Phase 14: Versions, Loaders & Validation (Planned)
+*Objective: Replace free-text loader strings with real pickers, and tell the operator when a pack is inconsistent.*
+
+- [ ] `GET /console/game-versions` (Mojang manifest, cached in-process) and `GET /console/loaders/:kind/versions?game=` (Fabric/Quilt meta APIs, Forge/NeoForge promotions).
+- [ ] Overview pickers write `pack.json`; changing the loader refetches loader files through the existing `loader.rs` path so `src/loader/` always matches.
+- [ ] Validation warnings: loader or game-version mismatch, client-only mods in a synced pack, duplicate projects, provenance pointing at files no longer present, known overlaps (OptiFine against Sodium + Iris).
+- [ ] No builder, manifest or client changes.
+
+### Phase 15: Library & Distribution UI (Planned)
+*Objective: Make the pack list a library, and surface the distribution a built pack already provides.*
+
+- [ ] Denser library over the same registry: grouping by authored / imported / hand-built, source badges, duplicate and fork, archive, quick update from stored provenance.
+- [ ] Distribute tab is read-only over today's public contract — client endpoint URLs, manifest summary, BLAKE3 check report — plus a `.mrpack` export of the workspace.
+- [ ] Build dialog with version bump; build history kept in `studio.json`; Check reuses `verify_pack_dist`.
+
+### Phase 16: Game Saves (Planned)
+*Objective: Turn the Backups and Policy views into a world-centric save browser.*
+
+- [ ] Console navigation becomes Dashboard · Studio · Game Saves; the upload-policy switch moves into the Game Saves header and keeps driving the same `policy.json` and the `403` behaviour for `POST /backups/upload`.
+- [ ] `GET /console/saves` groups `BackupStore` entries by world (archive count, total size, latest upload, linked pack); the detail pane lists every archive with timestamp, type, size and checksum.
+- [ ] Per-archive download and delete reuse the existing endpoints; world-level deletion lands in Phase 17.
+- [ ] Restore stays a client-side operation (`WorldArchiver::restore_backup`), so the server UI offers **Download** and marks a version as current only; a true restore needs client work and is out of this release.
+
+### Phase 17: Lifecycle & Destructive Actions (Planned)
+*Objective: Make deletion real, explicit, and safe for shared storage.*
+
+- [ ] **Confirm dialogs for anything that removes data from disk:** pack deletion requires typing the pack id and offers "Unregister only" as the non-destructive alternative; world deletion requires acknowledging the exact archive count and size; single-archive deletion is a plain confirm.
+- [ ] **`DELETE /console/packs/:id?files=1`:** removes `src/`, `dist/`, `studio.json` and the build history **only** when both resolved paths live under `<data>/packs/<id>/`. "Add Existing" may register arbitrary server paths, so anything outside the managed tree degrades to unregister-only with an explicit warning. Default (no flag) keeps today's unregister-only behaviour.
+- [ ] **`DELETE /console/saves/:world`:** removes every archive and sidecar belonging to one world and clears its current pointer.
+- [ ] **Audit trail:** one log line per destructive action recording actor token presence, target, mode (unregister vs delete) and reclaimed bytes; unregistering is documented in the UI as *not* revocation — clients that already synced keep their copy.
+- [ ] **Phase 11 integration:** runtimes are shared CAS keyed by `{mc}--{loader}--{loader_version}`, so pack deletion must never remove runtime blobs. Phase 11 gains a separate reference-counted GC sweep for runtimes no pack references.
+- [ ] **Verification:** path-containment tests including symlinked `src`/`dist`, traversal rejection, cascade versus unregister-only behaviour, world grouping, console dialog smoke tests.
+
+**Version 2 non-goals:** running Minecraft servers (no process, RCON or world control), any launcher/desktop/builder/sync change, an auth model beyond the current bearer token, and per-world backup retention or quota enforcement (still unclaimed work).
+
+---
+
+## 5. Architectural Safeguards
 - **Zero-trust verification:** Every file is verified by cryptographic hash before execution.
 - **Fail-safe updates:** Sync changes stage files in a temporary location before atomic rename.
 - **Offline resilience:** Validated instances remain playable offline when connectivity is unavailable.

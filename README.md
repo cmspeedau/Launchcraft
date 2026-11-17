@@ -57,6 +57,11 @@ Launchcraft is designed for speed, security, and portability. It replaces tradit
     upload-policy toggle, and a SKCraft-inspired **Pack Manager** — a pack registry with
     New Pack (scaffold a source workspace), Add Existing, Modify, in-process Build
     (runs the pack builder), and Check (verifies every CAS blob by BLAKE3).
+  - Multi-provider **modpack browser** (CurseForge · Modrinth · FTB) and archive upload,
+    importing straight into a buildable workspace with loader data fetched.
+  - **Server-side runtime distribution:** stages the Minecraft runtime each pack needs
+    (profiles, client jar, asset index, libraries) into one shared, deduplicated CAS,
+    served to clients over `/runtimes` with refcounted garbage collection.
 
 ---
 
@@ -176,6 +181,14 @@ docker compose up -d backup-server
 | `LAUNCHCRAFT_QUILT_URL` | `https://meta.quiltmc.org/v3` | Quilt loader meta API (loader data fetch) |
 | `LAUNCHCRAFT_FORGE_URL` | `https://maven.minecraftforge.net` | Forge Maven (installer jar fetch) |
 | `LAUNCHCRAFT_NEOFORGE_URL` | `https://maven.neoforged.net/releases` | NeoForge Maven (installer jar fetch) |
+| `LAUNCHCRAFT_META_URL` | `https://piston-meta.mojang.com` | Mojang metadata root (server-side runtime builds) |
+| `LAUNCHCRAFT_RESOURCES_URL` | `https://resources.download.minecraft.net` | Mojang asset-object CDN (runtime builds) |
+| `LAUNCHCRAFT_RUNTIME_ASSETS` | *(off)* | `1`/`true`/`full` also stages every asset object, not just the index |
+| `LAUNCHCRAFT_JRES` | `<data_dir>/jres` | Where managed Java runtimes are provisioned |
+| `LAUNCHCRAFT_ADOPTIUM_URL` | `https://api.adoptium.net/v3` | Adoptium API root (mirror it for air-gapped hosts) |
+| `LAUNCHCRAFT_JAVA` | *(unset)* | A fallback `java` binary; used only when it really is the needed major |
+| `LAUNCHCRAFT_JAVA_<N>` | *(unset)* | Exact path to a Java `<N>` JDK (e.g. `LAUNCHCRAFT_JAVA_8`), wins over downloads |
+| `LAUNCHCRAFT_JRES_HOST_JAVA` | `1` | Set `0` to ignore the host's own JDKs (`PATH` / `JAVA_HOME`) and keep the pool strictly managed |
 
 The launcher needs **one** URL for both jobs: enter `http://localhost:9090`
 as the **Server URL** (Home tab) and world backups go to
@@ -196,6 +209,70 @@ static nginx repo-server (the admin token never gates these routes):
 | `GET /packs` | Installable pack list shown by launcher clients |
 | `GET /packs/<id>/manifest.json` | `SyncEngine` manifest fetch |
 | `GET /packs/<id>/cas/objects/<shard>/<hash>` | CAS blobs |
+
+Each pack row also carries its `runtime_id`, and the same server distributes the
+Minecraft runtimes themselves:
+
+| Route | Purpose |
+| :--- | :--- |
+| `GET /runtimes` | Built runtimes (vanilla / Fabric / Quilt) with size and file count |
+| `GET /runtimes/<id>/manifest.json` | Runtime manifest in the same format as a pack |
+| `GET /runtimes/<id>/cas/objects/<shard>/<hash>` | Runtime blobs (shared store) |
+
+### Server-Side Runtime Distribution
+
+Importing a pack queues a build of the Minecraft runtime it needs — version
+profiles, client jar, asset index and the library jars that apply to this
+platform — fetched once by the server and stored content-addressed under
+`<data>/runtimes/cas/`. Ids are `{mc}--vanilla` or
+`{mc}--{loader}--{loader_version}`, so a Fabric and a Quilt pack on the same
+version share the client jar blob instead of duplicating it. Asset *objects*
+(hundreds of MB) are opt-in with `LAUNCHCRAFT_RUNTIME_ASSETS=1` or per request;
+by default only the index is staged and clients keep pulling objects from
+Mojang as before.
+
+The console's `GET /console/runtimes` shows every build (status, sizes, which
+packs reference it); `POST /console/runtimes` queues one,
+`DELETE /console/runtimes/<id>` unregisters it, and `POST /console/runtimes/gc`
+collects runtimes no pack references plus the blobs they alone used. Forge and
+NeoForge are still refused server-side: their launch profile has to be unpacked
+out of the installer jar first (Java itself is no longer the blocker — see
+below); those packs keep shipping the installer through `src/loader/`.
+
+### One Server, Many Java Versions
+
+Packs span fifteen years of Minecraft, and each era wants a different JVM:
+`1.7.10` / `1.10.2` / `1.12.2` run on **Java 8**, `1.17` on **16**,
+`1.18`–`1.20.4` on **17**, `1.20.5`+ on **21**. So Java is pooled by **major
+version** — one JDK per major, shared by every runtime and pack that asks for
+it, rather than a single global `JAVA_HOME`:
+
+```
+<data>/jres/java-8/bin/java      <- for 1.7.10-era packs
+<data>/jres/java-17/bin/java     <- for 1.18+ packs
+<data>/jres/java-21/bin/java     <- for 1.20.5+ packs
+```
+
+Every runtime record carries the `required_java` it needs (the profile's own
+`javaVersion.majorVersion` when it declares one, otherwise the version table),
+and `GET /console/jres` answers per major: available or not, from where
+(`env` / `system` / `managed`), its size, and `required_by` — the runtimes that
+would break without it. `POST /console/jres {"major": 8}` fetches one ahead of
+time; `DELETE /console/jres/<major>` is refused while a runtime needs it unless
+`force=1`.
+
+Resolution order for a major: `LAUNCHCRAFT_JAVA_<major>` → an already
+provisioned `<data>/jres/java-<major>` → a **host** JDK (`java` on `PATH`, then
+`JAVA_HOME`) — used only when `java -version` confirms the major, and
+symlinks are resolved so `/usr/bin/java` is measured as its real JDK home, not
+as `/usr` → a sha256-verified Temurin download from Adoptium. Set
+`LAUNCHCRAFT_JRES_HOST_JAVA=0` to ignore host JDKs and keep the pool strictly
+managed. Minecraft ≤ `1.5.x` wants Java 7/6, which Adoptium no longer
+publishes: those majors are listed as non-downloadable and resolve only through
+`LAUNCHCRAFT_JAVA_7` (or `_6`), so the console explains it instead of failing
+mysteriously. `docker/Dockerfile.server` ships Java 17 as the common case, which
+is picked up as a host JDK rather than re-downloaded, and the rest land on the
+data volume, so a container restart never fetches a JDK twice.
 
 Enter that same **Server URL** in the launcher (Home tab): the pack list is
 pulled automatically on start-up, shows each pack's install state (not

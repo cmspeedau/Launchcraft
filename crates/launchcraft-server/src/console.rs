@@ -98,6 +98,7 @@ pub async fn packs_list(
                 "dist": p.dist.display().to_string(),
                 "created_at": p.created_at,
                 "source": p.source,
+                "runtime_id": p.runtime_id,
             });
             let status = dist_status(&p.dist);
             if let Some(map) = row.as_object_mut() {
@@ -176,6 +177,7 @@ pub async fn packs_new(
         dist: dist.clone(),
         created_at: chrono::Utc::now().to_rfc3339(),
         source: None,
+        runtime_id: None,
     })?;
     registry.save(&state.data_dir)?;
     tracing::info!("created new pack '{}' at {}", body.id, src.display());
@@ -234,6 +236,7 @@ pub async fn packs_add(
         dist,
         created_at: chrono::Utc::now().to_rfc3339(),
         source: None,
+        runtime_id: None,
     })?;
     registry.save(&state.data_dir)?;
     tracing::info!("registered pack '{}'", body.id);

@@ -323,10 +323,15 @@ pub async fn add(
             project: body.project.clone(),
             file: body.file.clone(),
         }),
+        runtime_id: None,
     })?;
     registry.save(&state.data_dir)?;
 
     let built = crate::console::run_pack_build(src, dist, pack_id.clone(), None).await?;
+    // Phase 11: make sure the Minecraft runtime this pack needs is being
+    // staged on the server, and remember which runtime the pack uses.
+    let runtime =
+        crate::runtime_dist::attach(&state, &pack_id, &plan.loader, &plan.game_version).await;
 
     tracing::info!(
         "imported {} pack '{pack_id}' (project {} file {}): {} file(s) fetched",
@@ -344,6 +349,7 @@ pub async fn add(
         "loader_files": loader_files,
         "game_version": plan.game_version,
         "loader": plan.loader,
+        "runtime": runtime,
         "pack_version": built["pack_version"],
         "file_count": built["file_count"],
         "total_bytes": built["total_bytes"],
@@ -431,10 +437,13 @@ pub async fn upload(
         created_at: chrono::Utc::now().to_rfc3339(),
         // A hand-supplied archive has no upstream to update from.
         source: None,
+        runtime_id: None,
     })?;
     registry.save(&state.data_dir)?;
 
     let built = crate::console::run_pack_build(src, dist, pack_id.clone(), None).await?;
+    let runtime =
+        crate::runtime_dist::attach(&state, &pack_id, &plan.loader, &plan.game_version).await;
 
     tracing::info!(
         "imported uploaded pack '{pack_id}': {} file(s) in the tree",
@@ -449,6 +458,7 @@ pub async fn upload(
         "loader_files": loader_files,
         "game_version": plan.game_version,
         "loader": plan.loader,
+        "runtime": runtime,
         "pack_version": built["pack_version"],
         "file_count": built["file_count"],
         "total_bytes": built["total_bytes"],
@@ -552,6 +562,15 @@ pub async fn update(
     registry.save(&state.data_dir)?;
 
     let built = crate::console::run_pack_build(src, entry.dist, id.clone(), None).await?;
+    // The new version may name a different loader or Minecraft release, so
+    // re-attach whatever runtime it now needs.
+    let runtime = crate::runtime_dist::attach(
+        &state,
+        &id,
+        outcome.plan.loader.as_str(),
+        outcome.plan.game_version.as_str(),
+    )
+    .await;
     tracing::info!(
         "updated {} pack '{id}' (project {}) {} -> {}",
         kind.label(),
@@ -564,6 +583,7 @@ pub async fn update(
         "from_file": source.file, "file": target,
         "mods_fetched": outcome.fetched, "pruned": pruned, "warnings": warnings,
         "loader_files": loader_files,
+        "runtime": runtime,
         "pack_version": built["pack_version"],
         "file_count": built["file_count"],
         "total_bytes": built["total_bytes"],

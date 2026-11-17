@@ -19,17 +19,8 @@ fn cfg_for(data_dir: &Path) -> ServerConfig {
     ServerConfig {
         addr: "127.0.0.1:0".into(),
         data_dir: data_dir.to_path_buf(),
-        token: None,
-        repo_dist: None,
         max_upload_mb: 8,
-        curseforge_key: None,
-        curseforge_url: "https://api.curseforge.com/v1".into(),
-        modrinth_url: "https://api.modrinth.com/v2".into(),
-        ftb_url: "https://dist.creeper.host/FTB2".into(),
-        fabric_url: "https://meta.fabricmc.net/v2".into(),
-        quilt_url: "https://meta.quiltmc.org/v3".into(),
-        forge_url: "https://maven.minecraftforge.net".into(),
-        neoforge_url: "https://maven.neoforged.net/releases".into(),
+        ..Default::default()
     }
 }
 

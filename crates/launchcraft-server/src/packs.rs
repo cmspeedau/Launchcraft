@@ -58,6 +58,10 @@ pub struct PackEntry {
     /// Set for packs imported from a modpack host; drives the update button.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<PackSource>,
+    /// Server-side Minecraft runtime this pack needs (`runtime_dist` id),
+    /// recorded on import so the console can show and GC it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_id: Option<String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -137,6 +141,7 @@ mod tests {
             dist: PathBuf::from("/srv/dist").join(id),
             created_at: String::new(),
             source: None,
+            runtime_id: None,
         }
     }
 
