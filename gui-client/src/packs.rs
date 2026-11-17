@@ -29,6 +29,11 @@ pub struct PackInfo {
     pub file_count: usize,
     #[serde(default)]
     pub total_bytes: u64,
+    /// The server-side runtime this pack launches with
+    /// (`{mc}--vanilla` / `{mc}--{loader}--{loader_version}`), when the server
+    /// has staged one. Installing the pack pulls it into the data root first.
+    #[serde(default)]
+    pub runtime_id: Option<String>,
 }
 
 /// Outcome of `GET /packs`.
@@ -323,6 +328,12 @@ async fn do_install(
     prepare_instance(&instance_dir, pack, server_url)?;
     let repo_url = install_repo_url(server_url, &pack.id);
 
+    // Phase 11: the runtime (profiles, client jar, libraries, asset index) is
+    // shared across packs, so fetch it before the pack's own files. A failure
+    // here is reported but not fatal — the Versions tab remains the manual
+    // fallback, and the pack files still install.
+    crate::runtimes::ensure_for_pack(paths, server_url, pack.runtime_id.as_deref(), tx, ctx).await;
+
     report_progress(
         tx,
         ctx,
@@ -449,6 +460,7 @@ mod tests {
             loader: None,
             file_count: 0,
             total_bytes: 0,
+            runtime_id: None,
         };
         prepare_instance(&tmp.path().join("served"), &pack, "http://h:9090").unwrap();
         let text = std::fs::read_to_string(tmp.path().join("served/instance.json")).unwrap();
@@ -508,6 +520,7 @@ mod tests {
             loader: None,
             file_count: 0,
             total_bytes: 0,
+            runtime_id: None,
         };
         assert!(prepare_instance(&tmp.path().join("x"), &pack, "http://x").is_err());
     }

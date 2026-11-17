@@ -13,6 +13,7 @@ launchcraft-backup = { path = "../crates/launchcraft-backup" }
 launchcraft-sync = { path = "../crates/launchcraft-sync" }
 launchcraft-auth = { path = "../crates/launchcraft-auth" }
 launchcraft-runtime = { path = "../crates/launchcraft-runtime" }
+blake3 = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -22,5 +23,11 @@ chrono = { workspace = true }
 image = { workspace = true }
 
 [dev-dependencies]
+# Real client <-> server contract test (ignored by default): the launcher
+# installs a runtime the running server staged from Mojang.
+launchcraft-server = { path = "../crates/launchcraft-server" }
+axum = "0.7"
 tempfile = { workspace = true }
 zip = { workspace = true }
+zstd = { workspace = true }
+futures = { workspace = true }

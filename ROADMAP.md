@@ -415,11 +415,28 @@ Phase 1: Workspace & Core Foundation (Done)
     reuse without re-download, persistence across restarts, refusal/force delete, the
     Java 7 override path, unknown majors and token gating; plus unit tests for the
     version table and the resolution preference order.
-- [ ] **Client side (`gui-client`):**
-  - New `runtimes.rs` registry (`runtimes.json`) to skip re-sync.
-  - On pack install, sync the runtime into the data root (`versions/`, `assets/`, `libraries/`) via `SyncEngine`.
-  - Launch works unchanged (profile already written by the runtime distribution).
-  - Keep Versions tab as manual fallback.
+- [x] **Client side (`gui-client/src/runtimes.rs`):**
+  - `runtimes.json` (next to `client.json`) records each applied runtime: id, install
+    version, server URL, file count, size, manifest BLAKE3 and timestamp — that is what
+    lets a re-sync say "unchanged since last sync" instead of re-fetching.
+  - Installing a pack that names a `runtime_id` stages the runtime into the data root
+    first (`versions/`, `assets/`, `libraries/`), through the same `CasDownloader` the pack
+    sync uses, so one client jar is hard-linked into place for every pack that needs it.
+  - **Additive by design.** The data root also holds `instances/`, `config.json` and the
+    local CAS, so a runtime sync writes exactly the files its manifest names and deletes
+    nothing; every manifest path must start with `versions/`, `assets/` or `libraries/` and
+    has no `..`, absolute or empty segments. Files already on disk are re-verified by size
+    then BLAKE3, which heals a truncated jar and picks up a server rebuild without
+    downloading what is already right. The manifest's `pack_id` must equal the requested
+    id, so a server that answers the wrong store is refused rather than installed.
+  - PLAY no longer dead-ends: when the instance's version id is missing but the pack names
+    a runtime, the launcher syncs it from the configured server and asks the user to press
+    PLAY again. The Versions tab keeps a "Shared runtimes from the server" list with a
+    per-entry re-sync, and manual installs stay the fallback (nothing removed).
+  - Live test (`--ignored`, needs network) runs the real contract: a launchcraft-server
+    stages Minecraft 1.7.10 from Mojang, this launcher installs it over HTTP, the client jar
+    lands at its exact size, an unrelated file under `libraries/` survives, and the second
+    pass downloads zero files.
 - [~] **Docker:**
   - `docker/Dockerfile.server` ships `openjdk-17-jre-headless` as the common-case
     bootstrap; every other major is provisioned onto the `/data` volume on first use, so
@@ -491,7 +508,11 @@ Phase 1: Workspace & Core Foundation (Done)
 - [ ] **`DELETE /console/packs/:id?files=1`:** removes `src/`, `dist/`, `studio.json` and the build history **only** when both resolved paths live under `<data>/packs/<id>/`. "Add Existing" may register arbitrary server paths, so anything outside the managed tree degrades to unregister-only with an explicit warning. Default (no flag) keeps today's unregister-only behaviour.
 - [ ] **`DELETE /console/saves/:world`:** removes every archive and sidecar belonging to one world and clears its current pointer.
 - [ ] **Audit trail:** one log line per destructive action recording actor token presence, target, mode (unregister vs delete) and reclaimed bytes; unregistering is documented in the UI as *not* revocation — clients that already synced keep their copy.
-- [ ] **Phase 11 integration:** runtimes are shared CAS keyed by `{mc}--{loader}--{loader_version}`, so pack deletion must never remove runtime blobs. Phase 11 gains a separate reference-counted GC sweep for runtimes no pack references.
+- [ ] **Phase 11 integration:** pack deletion must never remove runtime blobs — runtimes
+    live in their own shared CAS and are reference-counted, with
+    `POST /console/runtimes/gc` (already shipped) dropping runtimes no pack references plus
+    the blobs only they used. Deleting a pack therefore only has to clear its own
+    `src/`, `dist/` and `studio.json`.
 - [ ] **Verification:** path-containment tests including symlinked `src`/`dist`, traversal rejection, cascade versus unregister-only behaviour, world grouping, console dialog smoke tests.
 
 **Version 2 non-goals:** running Minecraft servers (no process, RCON or world control), any launcher/desktop/builder/sync change, an auth model beyond the current bearer token, and per-world backup retention or quota enforcement (still unclaimed work).

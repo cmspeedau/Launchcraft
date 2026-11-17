@@ -36,6 +36,10 @@ Launchcraft is designed for speed, security, and portability. It replaces tradit
 - **Automated JRE & Runtime Management:**
   - Automatic host OS and architecture detection (`x86_64`, `aarch64`).
   - Seamless provisioning of Java 8, 17, and 21 from Adoptium / Zulu runtimes.
+  - **One server, many Java majors:** runtimes are pooled per major
+    (`<data>/jres/java-<n>`), so a `1.7.10` pack (Java 8) and a `1.20.5` pack
+    (Java 21) coexist; explicit paths (`LAUNCHCRAFT_JAVA_<n>`), a host JDK
+    (PATH / `JAVA_HOME`) and Temurin downloads are consulted in that order.
 - **Secure Microsoft & Xbox Authentication:**
   - OAuth 2.0 Device Code and Loopback flow.
   - Xbox Live and XSTS authentication token exchange with secure local credential rotation.
@@ -45,6 +49,10 @@ Launchcraft is designed for speed, security, and portability. It replaces tradit
     `libraries/` store — plus Fabric and Quilt overlays, all from the egui client.
   - PLAY builds the real launch command (rule-filtered classpath, natives,
     substituted `${auth_*}` arguments) and streams the game log.
+  - Or skip the download entirely: a launchcraft-server can stage the whole
+    runtime, and installing a pack pulls `versions/`, `assets/` and
+    `libraries/` from it over the shared CAS instead of Mojang (additive,
+    hash-verified, nothing pruned).
 - **Headless Pack Builder CLI (`launchcraft-builder`):**
   - Standalone CLI for pack creators and server operators.
   - Scans modpack source trees, computes CAS blobs, and emits synchronized `manifest.json` distributions ready for S3 / CDN hosting.
@@ -278,7 +286,15 @@ Enter that same **Server URL** in the launcher (Home tab): the pack list is
 pulled automatically on start-up, shows each pack's install state (not
 installed / installed / requires update), and **Install** syncs the pack into
 `<instances>/<id>/` through `launchcraft-sync` in the background, with a live
-progress bar. Saving the URL also re-points every instance's backup endpoint
+progress bar. When the pack names a server-staged runtime, the launcher pulls
+that into the shared data root **first** — one `versions/`, `assets/` and
+`libraries/` set per Minecraft+loader, hard-linked from the local CAS and shared
+by every pack — so **PLAY** works without touching the Versions tab. A runtime
+sync is strictly additive: it writes only the files its manifest names, refuses
+any path outside `versions/`, `assets/`, `libraries/`, re-verifies what is
+already on disk (healing a truncated jar, picking up a server rebuild) and
+deletes nothing, because the same directory also holds instances, config and the
+cache. Saving the URL also re-points every instance's backup endpoint
 at `<url>/api`, so packs and backups always share one server.
 
 The **Java Settings** tab lists every Java runtime it finds on the machine

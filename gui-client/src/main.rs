@@ -5,6 +5,7 @@ mod accounts;
 mod game;
 mod java;
 mod packs;
+mod runtimes;
 mod saves;
 mod versions;
 
@@ -595,9 +596,33 @@ impl App {
             };
         let mc = launchcraft_runtime::MinecraftClient::new(self.paths.clone());
         if !mc.is_installed(&version_id) {
-            self.set_status(format!(
-                "{version_id} is not installed yet — install it on the Versions tab first."
-            ));
+            // Phase 11: a server pack names the runtime it launches with, so
+            // pull that instead of sending the user to the Versions tab.
+            let runtime_id = self
+                .selected_pack
+                .and_then(|i| self.packs.get(i).cloned())
+                .and_then(|p| p.runtime_id.filter(|r| !r.is_empty()));
+            match (runtime_id, self.client_settings.server_url.clone()) {
+                (Some(runtime_id), Some(server_url)) => {
+                    self.set_status(format!(
+                        "{version_id} is not installed — syncing runtime {runtime_id} \
+                         from the server, press PLAY again when it finishes."
+                    ));
+                    runtimes::spawn_ensure(
+                        &self.runtime,
+                        self.ctx.clone(),
+                        self.events_tx.clone(),
+                        self.paths.clone(),
+                        server_url,
+                        runtime_id,
+                    );
+                }
+                _ => {
+                    self.set_status(format!(
+                        "{version_id} is not installed yet — install it on the Versions tab first."
+                    ));
+                }
+            }
             return;
         }
         let req = game::LaunchRequest {
@@ -809,6 +834,59 @@ impl App {
                     ui.monospace(id);
                 }
             });
+
+        // Server-staged runtimes are what make a pack launchable without any
+        // of the above: one shared install per (mc, loader, version).
+        let registry = runtimes::RuntimeRegistry::load(&self.paths.config);
+        if !registry.runtimes.is_empty() {
+            ui.separator();
+            ui.strong("Shared runtimes from the server");
+            egui::ScrollArea::vertical()
+                .id_source("runtime_list")
+                .max_height(140.0)
+                .show(ui, |ui| {
+                    for entry in registry.runtimes.clone() {
+                        ui.horizontal(|ui| {
+                            ui.monospace(&entry.install_version);
+                            ui.weak(format!(
+                                "{} files · {}",
+                                entry.file_count,
+                                packs::human_size(entry.total_bytes)
+                            ));
+                            let present = self
+                                .paths
+                                .versions
+                                .join(&entry.install_version)
+                                .join(format!("{}.json", entry.install_version))
+                                .is_file();
+                            if present {
+                                ui.weak("on disk");
+                            } else if ui
+                                .small_button("Re-sync")
+                                .on_hover_text("Fetch this runtime from the server again")
+                                .clicked()
+                            {
+                                let server = entry.server_url.clone();
+                                if server.is_empty() {
+                                    self.set_status(
+                                        "This runtime record has no server URL to re-sync from.",
+                                    );
+                                } else {
+                                    runtimes::spawn_ensure(
+                                        &self.runtime,
+                                        self.ctx.clone(),
+                                        self.events_tx.clone(),
+                                        self.paths.clone(),
+                                        server,
+                                        entry.id.clone(),
+                                    );
+                                    self.set_status(format!("Re-syncing {}…", entry.id));
+                                }
+                            }
+                        });
+                    }
+                });
+        }
     }
 
     fn draw_accounts(&mut self, ui: &mut egui::Ui) {
