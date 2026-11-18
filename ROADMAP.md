@@ -35,7 +35,7 @@ Portable Mode Trigger:
 
 Installed Mode (Standard OS defaults):
   - Linux:   ~/.config/launchcraft (config) & ~/.local/share/launchcraft (data)
-  - Windows: %APPDATA%\launchcraft
+  - Windows: %APPDATA%\\launchcraft
   - macOS:   ~/Library/Application Support/launchcraft
 ```
 
