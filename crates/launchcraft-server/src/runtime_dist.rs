@@ -117,19 +117,20 @@ impl RuntimeKey {
             && self.loader_version.as_deref().is_none_or(ok)
     }
 
-    /// Reject loaders whose profile only an installer jar can produce.
+    /// Loaders this server can stage: Fabric and Quilt through their meta
+    /// APIs, Forge and NeoForge by reading the launch profile out of the
+    /// installer jar (see [`crate::forge`]).
     fn is_buildable(&self) -> bool {
         self.loader
             .as_deref()
-            .is_none_or(|k| matches!(k, "fabric" | "quilt"))
+            .is_none_or(|k| matches!(k, "fabric" | "quilt" | "forge" | "neoforge"))
     }
 }
 
 /// Runtime for a pack import's `{loader, game_version}` pair. Empty loaders
 /// mean vanilla; a loader the server cannot parse (or a missing game version)
-/// means no runtime at all. Forge/NeoForge map to a real key that
-/// [`RuntimeKey::is_buildable`] rejects, so callers can tell "unsupported"
-/// from "nothing to do".
+/// means no runtime at all. Forge and NeoForge map to real, buildable keys —
+/// their launch profile is read out of the installer jar.
 pub fn key_for_plan(loader: &str, game_version: &str) -> Option<RuntimeKey> {
     let game = game_version.trim();
     if game.is_empty() {
@@ -344,10 +345,20 @@ pub async fn schedule(
     if !key.is_buildable() {
         let loader = key.loader_label().unwrap_or_default();
         return Err(ApiError::bad_request(format!(
-            "server-side runtime builds support vanilla, Fabric and Quilt — '{loader}' still \
-             needs its installer jar unpacked into a launch profile. Java itself is available \
-             (see /console/jres); the installer-format reader is the missing piece. The pack \
-             still gets the installer through src/loader/."
+            "server-side runtime builds support vanilla, Fabric, Quilt, Forge and NeoForge — \
+             '{loader}' is not one of them, so nothing was staged and the pack keeps whatever \
+             loader files it ships in src/loader/."
+        )));
+    }
+    if key
+        .loader
+        .as_deref()
+        .is_some_and(|k| matches!(k, "forge" | "neoforge"))
+        && key.loader_version.is_none()
+    {
+        return Err(ApiError::bad_request(format!(
+            "a {} runtime needs an explicit loader_version: the installer jar is addressed by it",
+            key.loader.clone().unwrap_or_default()
         )));
     }
 
@@ -510,20 +521,26 @@ async fn build_runtime(
         )
     })?;
 
-    let report = match (&key.loader, &key.loader_version) {
-        (Some(kind), Some(version)) => {
-            let loader = if kind == "quilt" {
-                LoaderKind::Quilt
-            } else {
-                LoaderKind::Fabric
-            };
-            client
-                .install_loader(loader, &key.mc_version, version, &list, assets, None)
-                .await
+    let report = if crate::forge::family_of(key).is_some() {
+        crate::forge::stage(state, &client, &list, key, assets)
+            .await
+            .map_err(|e| e.message)?
+    } else {
+        match (&key.loader, &key.loader_version) {
+            (Some(kind), Some(version)) => {
+                let loader = if kind == "quilt" {
+                    LoaderKind::Quilt
+                } else {
+                    LoaderKind::Fabric
+                };
+                client
+                    .install_loader(loader, &key.mc_version, version, &list, assets, None)
+                    .await
+            }
+            _ => client.install_version(entry, &list, assets, None).await,
         }
-        _ => client.install_version(entry, &list, assets, None).await,
-    }
-    .map_err(|e| format!("runtime fetch: {e}"))?;
+        .map_err(|e| format!("runtime fetch: {e}"))?
+    };
 
     if !staging
         .join("versions")
@@ -974,7 +991,7 @@ pub async fn attach(
     let key = key_for_plan(loader, game_version)?;
     if !key.is_buildable() {
         tracing::debug!(
-            "pack '{pack_id}': loader '{}' has no server-side runtime build (needs an installer)",
+            "pack '{pack_id}': loader '{}' has no server-side runtime build",
             key.loader_label().unwrap_or_default()
         );
         return None;
@@ -1038,14 +1055,16 @@ mod tests {
             key_for_plan("quilt-0.24.0", "1.20.4").map(|k| k.id()),
             Some("1.20.4--quilt--0.24.0".into())
         );
-        // The mapping is faithful even for loaders the server cannot build:
-        // `attach` skips those, `schedule` refuses them outright.
-        let forge = key_for_plan("forge-47.2.0", "1.20.1");
+        // Forge and NeoForge map to buildable keys as well: the profile comes
+        // out of the installer jar rather than a meta API.
         assert_eq!(
-            forge.as_ref().map(|k| k.id()),
-            Some("1.20.1--forge--47.2.0".into())
+            key_for_plan("forge-47.2.0", "1.20.1").map(|k| (k.id(), k.is_buildable())),
+            Some(("1.20.1--forge--47.2.0".into(), true))
         );
-        assert_eq!(forge.map(|k| k.is_buildable()), Some(false));
+        assert_eq!(
+            key_for_plan("neoforge-21.1.267", "1.21.1").map(|k| k.id()),
+            Some("1.21.1--neoforge--21.1.267".into())
+        );
         // Unknown loaders and missing game versions map to no runtime at all.
         assert_eq!(key_for_plan("liteloader-1.12", "1.12.2"), None);
         assert_eq!(key_for_plan("fabric-0.15.11", ""), None);
@@ -1067,15 +1086,22 @@ mod tests {
         assert!(!loader.is_safe());
     }
 
+    /// Only unknown loaders are refused; Forge/NeoForge ids are safe because
+    /// the version is part of a maven path, never a filesystem one.
     #[test]
-    fn forge_and_neoforge_are_not_buildable() {
-        let forge = RuntimeKey {
+    fn loader_kinds_are_classified() {
+        let mk = |kind: &str, version: &str| RuntimeKey {
             mc_version: "1.20.1".into(),
-            loader: Some("forge".into()),
-            loader_version: Some("47.2.0".into()),
+            loader: Some(kind.into()),
+            loader_version: Some(version.into()),
         };
-        assert!(forge.is_safe());
-        assert!(!forge.is_buildable());
+        assert!(mk("forge", "47.2.0").is_buildable());
+        assert!(mk("neoforge", "21.1.267").is_buildable());
+        assert!(mk("fabric", "0.15.11").is_buildable());
+        assert!(mk("quilt", "0.24.0").is_buildable());
+        assert!(!mk("liteloader", "1.12").is_buildable());
+        assert!(mk("forge", "47.2.0").is_safe());
+        assert!(!mk("forge", "../47.2.0").is_safe());
     }
 
     #[test]

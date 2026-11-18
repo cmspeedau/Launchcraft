@@ -1,8 +1,9 @@
 //! Phase 11 server-side runtime distribution tests. One mock plays piston-meta
-//! (`/meta`), a blob CDN (`/files`), a maven repo (`/maven`) and the asset
-//! object host (`/resources`), so a runtime build never leaves the test
-//! process. Covers: vanilla and Fabric builds, the shared CAS (dedup across
-//! runtimes), opt-in asset objects, rule-filtered libraries, Forge refusal,
+//! (`/meta`), a blob CDN (`/files`), maven repos (`/maven`, `/forge-maven`,
+//! `/neoforge-maven`) and the asset object host (`/resources`), so a runtime
+//! build never leaves the test process. Covers: vanilla, Fabric and Forge
+//! builds, the shared CAS (dedup across runtimes), opt-in asset objects,
+//! rule-filtered libraries, installer profile guards, unknown-loader refusal,
 //! token gating, path fencing, delete-with-references and the gc sweep.
 
 use std::collections::BTreeMap;
@@ -39,6 +40,10 @@ fn sha1_hex(bytes: &[u8]) -> String {
 struct Mock {
     files: std::sync::Mutex<BTreeMap<String, Vec<u8>>>,
     base: OnceLock<String>,
+    /// Every path the maven handlers were asked for, in order.
+    served: std::sync::Mutex<Vec<String>>,
+    /// Set when the mismatched-Forge installer is requested.
+    forge_mismatch: std::sync::atomic::AtomicBool,
 }
 
 impl Mock {
@@ -50,6 +55,35 @@ impl Mock {
     }
     fn get(&self, name: &str) -> Option<Vec<u8>> {
         self.files.lock().unwrap().get(name).cloned()
+    }
+}
+
+/// Build an installer jar: a zip of literal entries. Forge/NeoForge installers
+/// are exactly this shape, and only `version.json` matters to the server.
+fn installer_zip(entries: &[(&str, &str)]) -> Vec<u8> {
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let options =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    for (name, body) in entries {
+        zip.start_file(*name, options).unwrap();
+        zip.write_all(body.as_bytes()).unwrap();
+    }
+    zip.finish().unwrap().into_inner()
+}
+
+/// Forge/NeoForge maven: installers and library jars by repository path.
+async fn maven_repo(
+    State(m): State<Arc<Mock>>,
+    UrlPath(rest): UrlPath<String>,
+) -> impl IntoResponse {
+    m.served.lock().unwrap().push(rest.clone());
+    if rest.contains("MISMATCH") {
+        m.forge_mismatch
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    match m.get(&format!("maven:{rest}")) {
+        Some(bytes) => (StatusCode::OK, bytes),
+        None => (StatusCode::NOT_FOUND, Vec::new()),
     }
 }
 
@@ -179,6 +213,60 @@ async fn spawn(data_dir: &Path, token: Option<String>) -> (String, Arc<Mock>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mock_base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
     mock.base.set(mock_base.clone()).ok();
+
+    // Forge-family installers, addressed the way the real mavens address them.
+    // `version.json` is a Mojang profile; `install_profile.json` lists the
+    // INSTALLER's own dependencies, which must never reach a runtime manifest.
+    mock.put("asm.jar", b"asm-bytecode-library".to_vec());
+    mock.put(
+        "maven:net/minecraftforge/forge/1.20.1-47.2.0/forge-1.20.1-47.2.0.jar",
+        b"forge-universal-jar".to_vec(),
+    );
+    let forge_profile = r#"{
+        "id": "1.20.1-forge-47.2.0",
+        "inheritsFrom": "1.20.1",
+        "mainClass": "cpw.mods.bootstraplauncher.BootstrapLauncher",
+        "libraries": [
+          { "name": "net.minecraftforge:forge:1.20.1-47.2.0",
+            "downloads": { "artifact": {
+              "path": "net/minecraftforge/forge/1.20.1-47.2.0/forge-1.20.1-47.2.0.jar",
+              "url": "" } } },
+          { "name": "org.ow2.asm:asm:9.5",
+            "downloads": { "artifact": {
+              "path": "org/ow2/asm/asm/9.5/asm-9.5.jar",
+              "url": "BASE/files/asm.jar" } } }
+        ]
+    }"#
+    .replace("BASE", &mock_base);
+    mock.put(
+        "maven:net/minecraftforge/forge/1.20.1-47.2.0/forge-1.20.1-47.2.0-installer.jar",
+        installer_zip(&[
+            ("version.json", &forge_profile),
+            (
+                "install_profile.json",
+                r#"{"version":"1.20.1-forge-47.2.0","libraries":[{"name":"com.github.jponge:lzma-java:1.3","downloads":{"artifact":{"path":"com/github/jponge/lzma-java/1.3/lzma-java-1.3.jar","url":"http://example.invalid/x.jar"}}}],"processors":[]}"#,
+            ),
+            ("data/client.lzma", "installer payload, never a game file"),
+        ]),
+    );
+
+    // Same coordinates, profile for another Minecraft release.
+    let mismatch_profile =
+        forge_profile.replace(r#""inheritsFrom": "1.20.1""#, r#""inheritsFrom": "1.20.4""#);
+    mock.put(
+        "maven:net/minecraftforge/forge/1.20.1-MISMATCH/forge-1.20.1-MISMATCH-installer.jar",
+        installer_zip(&[("version.json", &mismatch_profile)]),
+    );
+
+    // NeoForge-style installer with no profile inside.
+    mock.put(
+        "maven:net/neoforged/neoforge/NOPROFILE/neoforge-NOPROFILE-installer.jar",
+        installer_zip(&[
+            ("install_profile.json", "{}"),
+            ("META-INF/MANIFEST.MF", "Manifest-Version: 1.0"),
+        ]),
+    );
+
     let app = axum::Router::new()
         .route(
             "/meta/mc/game/version_manifest_v2.json",
@@ -193,6 +281,8 @@ async fn spawn(data_dir: &Path, token: Option<String>) -> (String, Arc<Mock>) {
         .route("/files/:name", get(blob))
         .route("/maven/*rest", get(maven_blob))
         .route("/resources/:shard/:hash", get(asset_object))
+        .route("/forge-maven/*rest", get(maven_repo))
+        .route("/neoforge-maven/*rest", get(maven_repo))
         .with_state(mock.clone());
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
@@ -542,11 +632,16 @@ async fn asset_objects_are_opt_in() {
 }
 
 #[tokio::test]
-async fn forge_needs_an_installer_and_is_refused() {
+async fn forge_runtime_is_staged_from_the_installer_jar() {
     let data = tempfile::tempdir().unwrap();
-    let (base, _mock) = spawn(data.path(), None).await;
+    let (base, mock) = spawn(data.path(), None).await;
 
-    let (status, body) = queue(
+    // Vanilla first, so the Forge runtime can be compared against it.
+    queue(&base, None, serde_json::json!({ "game_version": "1.20.1" })).await;
+    wait_ready(&base, "1.20.1--vanilla").await;
+    let vanilla_blobs = cas_object_count(data.path());
+
+    let (status, queued) = queue(
         &base,
         None,
         serde_json::json!({
@@ -554,14 +649,139 @@ async fn forge_needs_an_installer_and_is_refused() {
         }),
     )
     .await;
+    assert_eq!(status, 202);
+    assert_eq!(queued["id"], "1.20.1--forge--47.2.0");
+    let entry = wait_ready(&base, "1.20.1--forge--47.2.0").await;
+    assert_eq!(entry["install_version"], "1.20.1-forge-47.2.0");
+    assert_eq!(entry["loader"], "forge");
+
+    let manifest = get_json(&base, "/runtimes/1.20.1--forge--47.2.0/manifest.json").await;
+    let files = manifest["files"].as_object().unwrap();
+    assert_eq!(manifest["loader"], "forge-47.2.0");
+    // Profile + client jar copy, the inherited vanilla profile, and both
+    // libraries — including the forge jar whose URL the installer left blank.
+    assert!(files.contains_key("versions/1.20.1-forge-47.2.0/1.20.1-forge-47.2.0.json"));
+    assert!(files.contains_key("versions/1.20.1-forge-47.2.0/1.20.1-forge-47.2.0.jar"));
+    assert!(files.contains_key("versions/1.20.1/1.20.1.json"));
+    assert!(files
+        .contains_key("libraries/net/minecraftforge/forge/1.20.1-47.2.0/forge-1.20.1-47.2.0.jar"));
+    assert!(files.contains_key("libraries/org/ow2/asm/asm/9.5/asm-9.5.jar"));
+    // The overlay's client jar is the base layer's download (the merged
+    // client jar): the forge runtime reuses the vanilla jar bytes, so the
+    // shared CAS sees the same blob instead of a second copy.
+    let vanilla = get_json(&base, "/runtimes/1.20.1--vanilla/manifest.json").await;
+    assert_eq!(
+        vanilla["files"]["versions/1.20.1/1.20.1.jar"]["hash"],
+        manifest["files"]["versions/1.20.1-forge-47.2.0/1.20.1-forge-47.2.0.jar"]["hash"]
+    );
+
+    // The installer itself is never stored as a game file.
+    assert!(!files.keys().any(|k| k.contains("installer")));
+    // Neither are the installer's own dependencies.
+    assert!(!files
+        .keys()
+        .any(|k| k.contains("lzma-java") || k.contains("javaxdelta")));
+    assert!(mock.served.lock().unwrap().contains(
+        &"net/minecraftforge/forge/1.20.1-47.2.0/forge-1.20.1-47.2.0-installer.jar".to_string()
+    ));
+
+    // Cross-family dedup: the Forge runtime reuses every vanilla blob, so the
+    // shared store only grew by what Forge actually adds.
+    let after_forge = cas_object_count(data.path());
+    let forge_files = manifest["files"].as_object().unwrap().len();
+    assert!(
+        after_forge - vanilla_blobs < forge_files,
+        "expected dedup against vanilla: {vanilla_blobs} -> {after_forge} for {forge_files} entries"
+    );
+}
+
+#[tokio::test]
+async fn forge_installer_for_a_different_minecraft_is_refused() {
+    let data = tempfile::tempdir().unwrap();
+    let (base, mock) = spawn(data.path(), None).await;
+
+    // Ask for a Forge runtime whose installer belongs to another MC version.
+    let (status, queued) = queue(
+        &base,
+        None,
+        serde_json::json!({
+            "game_version": "1.20.1", "loader": "forge", "loader_version": "MISMATCH",
+        }),
+    )
+    .await;
+    assert_eq!(status, 202);
+    assert_eq!(queued["id"], "1.20.1--forge--MISMATCH");
+    let entry = wait_settled(&base, "1.20.1--forge--MISMATCH").await;
+    assert_eq!(entry["status"], "error");
+    assert!(entry["error"]
+        .as_str()
+        .unwrap()
+        .contains("is a profile for Minecraft 1.20.4, not 1.20.1"));
+    assert!(mock
+        .forge_mismatch
+        .load(std::sync::atomic::Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn an_installer_without_a_profile_fails_cleanly() {
+    let data = tempfile::tempdir().unwrap();
+    let (base, _mock) = spawn(data.path(), None).await;
+
+    let (status, _queued) = queue(
+        &base,
+        None,
+        serde_json::json!({
+            "game_version": "1.20.1", "loader": "neoforge", "loader_version": "NOPROFILE",
+        }),
+    )
+    .await;
+    assert_eq!(status, 202);
+    let entry = wait_settled(&base, "1.20.1--neoforge--NOPROFILE").await;
+    assert_eq!(entry["status"], "error");
+    let message = entry["error"].as_str().unwrap();
+    assert!(message.contains("no version.json"), "message: {message}");
+    // Nothing half-installed: no manifest, and the staging tree is gone.
+    assert!(!data
+        .path()
+        .join("runtimes/1.20.1--neoforge--NOPROFILE/manifest.json")
+        .exists());
+    assert!(!data
+        .path()
+        .join("runtimes/staging/1.20.1--neoforge--NOPROFILE")
+        .exists());
+}
+
+#[tokio::test]
+async fn unknown_loader_kinds_are_refused_before_any_state_change() {
+    let data = tempfile::tempdir().unwrap();
+    let (base, _mock) = spawn(data.path(), None).await;
+
+    let (status, body) = queue(
+        &base,
+        None,
+        serde_json::json!({
+            "game_version": "1.20.1", "loader": "liteloader", "loader_version": "1.12",
+        }),
+    )
+    .await;
     assert_eq!(status, 400);
     let message = body["message"].as_str().unwrap();
-    assert!(message.contains("installer"), "message: {message}");
+    assert!(message.contains("not one of them"), "message: {message}");
     // Rejected before any state change: no half-built record exists.
     assert!(console_runtimes(&base).await["runtimes"]
         .as_array()
         .unwrap()
         .is_empty());
+
+    // A Forge runtime with no explicit version cannot be addressed either.
+    let (status, body) = queue(
+        &base,
+        None,
+        serde_json::json!({ "game_version": "1.20.1", "loader": "forge" }),
+    )
+    .await;
+    assert_eq!(status, 400);
+    assert!(body["message"].as_str().unwrap().contains("loader_version"));
 
     // Unsafe ids never reach the filesystem either.
     let (status, _) = queue(&base, None, serde_json::json!({ "game_version": "../etc" })).await;

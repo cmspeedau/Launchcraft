@@ -347,7 +347,7 @@ Phase 1: Workspace & Core Foundation (Done)
 
 ---
 
-### Phase 11: Server-Side Runtime Distribution (In Progress)
+### Phase 11: Server-Side Runtime Distribution (In Progress → mostly done)
 *Objective: Move all Minecraft runtime provisioning (vanilla client.jar, assets, libraries, and Fabric/Quilt/Forge/NeoForge loaders) to the server, so the client only needs MS login and a file pull. Dedup runtimes shared across packs.*
 
 - [x] **Server-side runtime fetch (`crates/launchcraft-server/src/runtime_dist.rs`):**
@@ -358,16 +358,15 @@ Phase 1: Workspace & Core Foundation (Done)
   - Asset **objects** are opt-in (`LAUNCHCRAFT_RUNTIME_ASSETS`, or `assets` per request): the
     index json is always stored, the hundreds of MB of objects only on request — a first
     build costs a few jars instead of mirroring Mojang's whole asset store.
-  - Forge/NeoForge are refused with an explicit message instead of half-built: their
-    launch profile has to be unpacked out of the installer jar (Java itself is no longer
-    the blocker — `jres` pools one JDK per major on demand). Those packs keep shipping the
-    installer through `src/loader/`.
-  - Store: `<data>/runtimes/registry.json` (status `building`/`ready`/`error`, sizes,
-    timestamps) plus `<data>/runtimes/<id>/manifest.json` in exactly the `PackManifest`
-    shape, so a client can sync a runtime with the ordinary `SyncEngine`. Stable ids:
-    `{mc}--vanilla` and `{mc}--{loader}--{loader_version}`.
-  - Builds run detached — `POST /console/runtimes` answers `202`, and a request for a build
-    already running joins it rather than starting a second fetch.
+  - Forge and NeoForge: staged from the installer jar itself — the installer is a zip whose
+    `version.json` **is** a Mojang-format launch profile (`mainClass`, libraries, inheritsFrom),
+    so staging reuses the ordinary overlay-install path (`MinecraftClient::install_overlay_profile`,
+    with the loader maven base to synthesize the installer-shipped libraries that carry a
+    path but no url). Verified against real Forge 1.20.1 / 1.12.2 installer jars and the NeoForge
+    maven layout; the `inheritsFrom` parent must equal the requested Minecraft version or the
+    build fails with a clear error. Those packs keep shipping the installer through `src/loader/`
+    only as a fallback for tooling that wants the full installer (server-jar processors and the
+    like).
 - [x] **Dedup / cache:**
   - One shared runtime CAS (`<data>/runtimes/cas/objects/…`): blobs dedup across every
     runtime, so a Fabric and a Quilt runtime on the same version reuse the same client jar
@@ -446,6 +445,11 @@ Phase 1: Workspace & Core Foundation (Done)
   - Still open: a JDK that can *run* the legacy Forge installer (Java 8 with the
     `unpack200` those installers shell out to) as a build-time dependency rather than a
     runtime download — the remaining prerequisite for Forge/NeoForge runtime builds.
+    **Update (Phase 11 close-out):** no longer open. Staging reads the launch profile
+    out of the installer jar, so the server image needs no installer-capable JDK at all;
+    the only Java requirement is the per-major runtime the profile declares (Java 8 for the
+    legacy Forge/NeoForge era, via the pooled Temurin install), which `jres` already
+    provisions on demand.
 
 ---
 

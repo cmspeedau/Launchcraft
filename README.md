@@ -243,9 +243,11 @@ The console's `GET /console/runtimes` shows every build (status, sizes, which
 packs reference it); `POST /console/runtimes` queues one,
 `DELETE /console/runtimes/<id>` unregisters it, and `POST /console/runtimes/gc`
 collects runtimes no pack references plus the blobs they alone used. Forge and
-NeoForge are still refused server-side: their launch profile has to be unpacked
-out of the installer jar first (Java itself is no longer the blocker — see
-below); those packs keep shipping the installer through `src/loader/`.
+NeoForge are staged server-side too: their launch profile is read out of the
+installer jar's `version.json` (a plain Mojang-format profile), so no
+installer run and no JDK are needed — the per-major Java pool covers whatever
+the profile declares; those packs keep shipping the installer through
+`src/loader/` as a fallback.
 
 ### One Server, Many Java Versions
 
@@ -380,9 +382,10 @@ Java tab, Launchcraft downloads the matching Temurin build from Adoptium
 it — provisioned runtimes also appear in the Java tab's dropdown. If the
 download fails the game still launches with your configured Java.
 
-Forge/NeoForge packs keep shipping their loader inside the synced instance
-(the server stores the official installer); launching those through the
-version manager is still on the roadmap.
+Forge/NeoForge packs now get their launcher profile staged server-side from the
+official installer jar (see *Server-Side Runtime Distribution* above), so a
+synced instance launches through the ordinary version-manager path; the server
+keeps the installer itself only as a fallback for tooling that wants it.
 
 | Variable | Default | Description |
 | :--- | :--- | :--- |

@@ -110,6 +110,24 @@ impl LoaderKind {
     }
 }
 
+/// One overlay install: a foreign loader profile (Forge/NeoForge installer
+/// `version.json`, or a Fabric/Quilt meta profile) plus the context needed to
+/// fetch its layers. Bundled so the install itself stays a single, readable
+/// step instead of a long positional argument list.
+pub struct OverlayInstall<'a> {
+    /// The install id the profile belongs to, `<mc>-<kind>-<loader_version>`.
+    pub install_id: String,
+    /// The vanilla version the profile inherits from (the base of the chain).
+    pub base_version_id: &'a str,
+    pub profile_json: &'a [u8],
+    pub list: &'a VersionListFile,
+    pub with_assets: bool,
+    pub progress: Option<&'a Progress>,
+    /// Maven base used to synthesize download URLs for artifacts that carry a
+    /// path but an empty url (legacy Forge does this for its own universal jar).
+    pub maven_base: Option<&'a str>,
+}
+
 // --------------------------------------------------------------------- client
 
 pub struct MinecraftClient {
@@ -271,24 +289,90 @@ impl MinecraftClient {
         let url = format!("{base}/versions/loader/{mc_version}/{loader_version}/profile/json");
         report(progress, "profile", 0, 1, loader_version);
         let bytes = self.get_bytes(&url).await?;
-        let raw: Value = serde_json::from_slice(&bytes)
+        let install = OverlayInstall {
+            install_id: format!("{mc_version}-{}-{}", kind.id(), loader_version),
+            base_version_id: mc_version,
+            profile_json: &bytes,
+            list,
+            with_assets,
+            progress,
+            maven_base: None,
+        };
+        self.install_overlay_profile(install).await
+    }
+
+    /// Install an overlay launch profile that came from somewhere other than
+    /// the Fabric/Quilt meta APIs — in practice the `version.json` inside a
+    /// Forge or NeoForge installer jar, which is a plain Mojang profile that
+    /// `inheritsFrom` its vanilla parent.
+    ///
+    /// The profile's own id is rewritten to the launcher convention
+    /// `<mc>-<kind>-<loader_version>`, which is also what `instance.json`
+    /// resolves to at launch, and the version is pinned to inherit `mc_version`
+    /// whatever the file claims. `maven_base` synthesizes download URLs for
+    /// artifacts that ship a path but an empty url (legacy Forge does this for
+    /// its own universal jar).
+    pub async fn install_overlay_profile(
+        &self,
+        install: OverlayInstall<'_>,
+    ) -> Result<InstallReport, RuntimeError> {
+        let OverlayInstall {
+            install_id,
+            base_version_id,
+            profile_json,
+            list,
+            with_assets,
+            progress,
+            maven_base,
+        } = install;
+
+        let rest = install_id
+            .strip_prefix(&format!("{base_version_id}-"))
+            .ok_or_else(|| {
+                RuntimeError::ManifestError(format!(
+                    "unsafe loader coordinates: {install_id} / {base_version_id}"
+                ))
+            })?;
+        let (kind, loader_version) = rest.split_once('-').ok_or_else(|| {
+            RuntimeError::ManifestError(format!(
+                "unsafe loader coordinates: {install_id} / {base_version_id}"
+            ))
+        })?;
+
+        if !safe_version_id(&install_id) || !safe_version_id(base_version_id) {
+            return Err(RuntimeError::ManifestError(format!(
+                "unsafe loader coordinates: {install_id} / {base_version_id}"
+            )));
+        }
+        if !safe_kind(kind) || !safe_version_id(loader_version) {
+            return Err(RuntimeError::ManifestError(format!(
+                "unsafe loader coordinates: {install_id} / {base_version_id}"
+            )));
+        }
+        let raw: Value = serde_json::from_slice(profile_json)
             .map_err(|e| RuntimeError::ManifestError(format!("bad loader profile: {e}")))?;
         let mut profile: VersionManifest = serde_json::from_value(raw.clone())?;
+        if raw.get("mainClass").and_then(Value::as_str).is_none() {
+            return Err(RuntimeError::ManifestError(
+                "loader profile has no mainClass".to_string(),
+            ));
+        }
 
         // Loader metadata spells libraries several ways; normalize them all
         // into explicit artifact download entries so install and launch can
         // treat every layer uniformly.
         let libs_raw = raw.get("libraries").and_then(Value::as_array).cloned();
-        normalize_loader_libraries(&mut profile.libraries, libs_raw.as_deref());
+        normalize_loader_libraries(&mut profile.libraries, libs_raw.as_deref(), maven_base);
 
-        profile.id = format!("{mc_version}-{}-{loader_version}", kind.id());
-        profile.inherits_from = Some(mc_version.to_string());
+        profile.id = install_id.clone();
+        profile.inherits_from = Some(base_version_id.to_string());
         self.write_version_json(
-            &profile.id,
+            &install_id,
             &serde_json::to_vec_pretty(&profile)
                 .map_err(|e| RuntimeError::ManifestError(e.to_string()))?,
         )?;
 
+        report(progress, "profile", 0, 1, loader_version);
         let layers = self.load_chain(profile, list).await?;
         let id = layers.last().expect("non-empty chain").id.clone();
         self.finish_install(&layers, &id, with_assets, progress)
@@ -833,6 +917,16 @@ pub fn safe_version_id(id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b'+'))
 }
 
+/// A loader kind becomes part of a version id and a directory name, so only
+/// plain lowercase tokens are allowed — never `../` or a Windows path.
+fn safe_kind(kind: &str) -> bool {
+    !kind.is_empty()
+        && kind.len() <= 32
+        && kind
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'-'))
+}
+
 /// Substitute `${name}` launch placeholders from a resolved variable map.
 /// Unknown placeholders resolve to empty strings so a launch still proceeds
 /// (official metadata sometimes gates them behind features we skip).
@@ -906,7 +1000,11 @@ fn rules_allow(rules: &[Rule], platform: &PlatformInfo) -> bool {
 /// bare maven coordinates, side-only `downloads`) into concrete
 /// `downloads.artifact` entries. Mirrors the server's `loader.rs` handling
 /// so both sides store identical maven-style paths.
-fn normalize_loader_libraries(libs: &mut [Library], raw: Option<&[Value]>) {
+fn normalize_loader_libraries(
+    libs: &mut [Library],
+    raw: Option<&[Value]>,
+    maven_base: Option<&str>,
+) {
     let Some(raws) = raw else { return };
     for (lib, value) in libs.iter_mut().zip(raws.iter()) {
         let has_artifact = lib
@@ -915,6 +1013,26 @@ fn normalize_loader_libraries(libs: &mut [Library], raw: Option<&[Value]>) {
             .and_then(|d| d.artifact.as_ref())
             .is_some();
         if has_artifact {
+            // Forge's own jar is advertised with a path and an *empty* url:
+            // it lives under the same maven root as the installer, so the URL
+            // is synthesized rather than left blank (a blank URL would make
+            // the download fail with a confusing error at install time).
+            if let Some(dl) = lib.downloads.as_mut() {
+                if let Some(artifact) = dl.artifact.as_mut() {
+                    if artifact.url.trim().is_empty() {
+                        if let (Some(base), Some(path)) = (
+                            maven_base,
+                            artifact.path.as_deref().filter(|p| !p.is_empty()),
+                        ) {
+                            artifact.url = format!(
+                                "{}/{}",
+                                base.trim_end_matches('/'),
+                                path.trim_start_matches('/')
+                            );
+                        }
+                    }
+                }
+            }
             continue;
         }
         let mut candidate: Option<(String, String)> = None;

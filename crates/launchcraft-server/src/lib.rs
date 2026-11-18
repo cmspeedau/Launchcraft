@@ -9,6 +9,7 @@
 pub mod api;
 pub mod console;
 pub mod curseforge;
+pub mod forge;
 pub mod ftb;
 pub mod jres;
 pub mod loader;
